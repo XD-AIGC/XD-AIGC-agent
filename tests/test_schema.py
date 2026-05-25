@@ -4,7 +4,8 @@ from src.orchestrator.schema import BotAction, UserSession
 
 
 def test_botaction_valid_actions():
-    for action in ["select_skill", "ask_param", "call_api", "reply", "out_of_scope"]:
+    for action in ["select_skill", "lookup_characters", "lookup_options", "ask_param",
+                   "submit", "exit_skill", "reply", "out_of_scope"]:
         b = BotAction(action=action)
         assert b.action == action
 

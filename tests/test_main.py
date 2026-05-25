@@ -1,4 +1,5 @@
-from src.main import _strip_mentions, _normalize_message
+from src.main import _strip_mentions, _normalize_message, _load_lazy_resource
+from src.skill.schema import Skill, HttpBackend, SkillOutput
 
 
 def test_strip_single_mention():
@@ -70,3 +71,37 @@ def test_normalize_post_first_image_wins():
     }
     _, key = _normalize_message("post", content)
     assert key == "first"
+
+
+# ---- _load_lazy_resource ----
+
+def _make_skill_with_lazy(lazy_map: dict) -> Skill:
+    return Skill(
+        name="t", description="d",
+        api=HttpBackend(endpoint_path="/x"),
+        params=[],
+        output=SkillOutput(type="image_binary", display_as="feishu_image"),
+        lazy_resources=lazy_map,
+    )
+
+
+def test_lazy_resource_missing_config():
+    s = _make_skill_with_lazy({})
+    assert "没有配置" in _load_lazy_resource(s, "lookup_characters")
+
+
+def test_lazy_resource_file_not_exist():
+    s = _make_skill_with_lazy({"lookup_characters": "non/existent/path.tsv"})
+    assert "不存在" in _load_lazy_resource(s, "lookup_characters")
+
+
+def test_lazy_resource_loads_real_file(tmp_path, monkeypatch):
+    # 临时在 skills 目录下造一个测试资源文件
+    import src.main as main_mod
+    fake_skills_dir = tmp_path / "skills"
+    fake_skills_dir.mkdir()
+    (fake_skills_dir / "demo.tsv").write_text("a\tb\nc\td", encoding="utf-8")
+    monkeypatch.setattr(main_mod, "_SKILLS_DIR", fake_skills_dir)
+
+    s = _make_skill_with_lazy({"lookup_characters": "demo.tsv"})
+    assert _load_lazy_resource(s, "lookup_characters") == "a\tb\nc\td"

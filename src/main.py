@@ -8,11 +8,34 @@ from src.feishu.adapter import build_client, build_event_handler
 from src.feishu.reply import reply_text, reply_image
 from src.feishu.upload import upload_image
 from src.feishu.download import download_image
-from src.orchestrator.llm import decide
+from pathlib import Path
+
+from src.orchestrator.llm import router_decide, skill_decide
 from src.session.redis_store import SessionStore
-from src.skill.executor import execute
+from src.skill.executor import execute, SkillExecutionError
 from src.skill.registry import get_registry
+from src.skill.schema import Skill
 from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
+
+_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+_MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
+
+
+def _load_lazy_resource(skill: Skill, action_name: str) -> str:
+    """根据 skill.lazy_resources 配置加载资源文件内容。
+
+    skill.lazy_resources = {
+        'lookup_characters': 'xd-poster-gen-skill/references/characters.tsv',
+        'lookup_options': 'xd-poster-gen-skill/references/options.md',
+    }
+    """
+    rel_path = skill.lazy_resources.get(action_name)
+    if not rel_path:
+        return f"（{action_name} 没有配置 lazy_resources）"
+    abs_path = _SKILLS_DIR / rel_path
+    if not abs_path.exists():
+        return f"（资源文件不存在: {rel_path}）"
+    return abs_path.read_text(encoding="utf-8")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -135,39 +158,132 @@ async def _process(data) -> None:
         await reply_text(_client, message_id, "你想用这张图做什么？请告诉我。")
         return
 
-    # 纯文字路径
+    # 纯文字路径：Agentic Loop（支持 lazy lookup 自动 continue）
     if not text:
         await reply_text(_client, message_id, "请告诉我你想做什么，比如「帮我去白底」。")
         return
 
-    action = await decide(text, session.model_dump_json())
-    log.info(f"[ACT] {action}")
+    await _agentic_loop(text, session, user_id, message_id)
 
-    if action.action == "out_of_scope":
-        await reply_text(_client, message_id, _OUT_OF_SCOPE)
-        await _store.clear(user_id)
 
-    elif action.action == "select_skill":
-        session.state = "collecting"
-        session.skill_name = action.skill_name
-        skill = get_registry()[action.skill_name]
-        first_param = next((p for p in skill.params if p.required), None)
-        if first_param:
-            session.pending_param = first_param.name
-            await reply_text(_client, message_id, first_param.prompt_to_user)
-            await _store.save(user_id, session)
+async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> None:
+    """主决策循环：根据 mode 调 router/skill，自动 handle lookup，遇到终态退出。"""
+    lookup_count = 0
+    current_text = text
+
+    while True:
+        if session.mode == "router":
+            action = await router_decide(current_text, session)
         else:
-            result = await execute(skill, {})
-            if result.kind == "binary":
-                uploaded_key = await upload_image(_client, result.content_bytes)
-                await reply_image(_client, message_id, uploaded_key)
-            else:
-                await reply_text(_client, message_id, result.text or str(result.result_url or "完成"))
-            await _store.clear(user_id)
+            skill = get_registry().get(session.skill_name)
+            if skill is None:
+                log.error(f"skill {session.skill_name} 不存在，回 router")
+                session.mode = "router"
+                session.skill_name = None
+                await _store.save(user_id, session)
+                continue
+            action = await skill_decide(current_text, session, skill)
+        log.info(f"[ACT mode={session.mode}] {action.action} skill={action.skill_name} updated={action.updated_params}")
 
-    elif action.action in ("ask_param", "reply"):
-        await reply_text(_client, message_id, action.message or "")
-        await _store.save(user_id, session)
+        # 应用 LLM 声明的 updated_params
+        if action.updated_params:
+            session.collected_params.update(action.updated_params)
+
+        # 自动 continue：lazy load 资源后再问 LLM
+        if action.action in ("lookup_characters", "lookup_options"):
+            lookup_count += 1
+            if lookup_count > _MAX_AUTO_LOOKUPS_PER_TURN:
+                log.warning(f"超过 {_MAX_AUTO_LOOKUPS_PER_TURN} 次 lookup，回退")
+                await reply_text(_client, message_id, "处理超时，请重新描述需求。")
+                await _store.clear(user_id)
+                return
+            skill = get_registry().get(session.skill_name)
+            if skill is None:
+                await reply_text(_client, message_id, "内部错误：skill 丢失")
+                return
+            resource = _load_lazy_resource(skill, action.action)
+            session.loaded_resources[action.action] = resource
+            await _store.save(user_id, session)
+            current_text = f"[系统注入：{action.action} 资源已加载，请继续根据资源决定下一步 action]"
+            continue
+
+        # 终态 action：处理后退出循环
+        if action.action == "out_of_scope":
+            await reply_text(_client, message_id, _OUT_OF_SCOPE)
+            await _store.clear(user_id)
+            return
+
+        if action.action == "reply":
+            await reply_text(_client, message_id, action.message or "")
+            await _store.save(user_id, session)
+            return
+
+        if action.action == "exit_skill":
+            await reply_text(_client, message_id, action.message or "好的，需要其他帮助随时叫我。")
+            await _store.clear(user_id)
+            return
+
+        if action.action == "ask_param":
+            session.pending_param = action.param_name
+            await reply_text(_client, message_id, action.message or "请提供参数。")
+            await _store.save(user_id, session)
+            return
+
+        if action.action == "select_skill":
+            skill = get_registry().get(action.skill_name)
+            if skill is None:
+                await reply_text(_client, message_id, f"未知 skill: {action.skill_name}")
+                return
+            session.skill_name = action.skill_name
+
+            if skill.system_prompt_core:
+                # 复杂 skill：进入 Skill Mode，让 skill_decide 主导对话
+                session.mode = "skill"
+                session.loaded_resources = {}
+                session.collected_params = {}
+                await _store.save(user_id, session)
+                current_text = f"[系统注入：用户刚选择了 skill `{skill.name}`。请按 SKILL.md 规则启动 brief 收集流程]"
+                continue
+            else:
+                # 简单 skill：保持旧行为（按 prompt_to_user 问第一个 param）
+                session.state = "collecting"  # 旧字段
+                first_param = next((p for p in skill.params if p.required), None)
+                if first_param:
+                    session.pending_param = first_param.name
+                    await reply_text(_client, message_id, first_param.prompt_to_user)
+                    await _store.save(user_id, session)
+                else:
+                    result = await execute(skill, {})
+                    if result.kind == "binary":
+                        uploaded_key = await upload_image(_client, result.content_bytes)
+                        await reply_image(_client, message_id, uploaded_key)
+                    else:
+                        await reply_text(_client, message_id, result.text or str(result.result_url or "完成"))
+                    await _store.clear(user_id)
+                return
+
+        if action.action == "submit":
+            skill = get_registry().get(session.skill_name)
+            payload = action.submit_payload or session.collected_params
+            try:
+                result = await execute(skill, payload)
+                if result.kind == "binary":
+                    uploaded_key = await upload_image(_client, result.content_bytes)
+                    await reply_image(_client, message_id, uploaded_key)
+                elif result.kind == "url":
+                    await reply_text(_client, message_id, f"完成：{result.result_url}")  # A4 阶段会改成下载并 upload
+                else:
+                    await reply_text(_client, message_id, result.text or "完成")
+            except SkillExecutionError as e:
+                await reply_text(_client, message_id, f"处理失败：{e}")
+            except Exception as e:
+                log.exception("submit failed")
+                await reply_text(_client, message_id, f"处理失败：{e}")
+            await _store.clear(user_id)
+            return
+
+        log.warning(f"未处理的 action: {action.action}")
+        return
 
 
 def main() -> None:
