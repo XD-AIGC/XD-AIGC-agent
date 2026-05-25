@@ -31,6 +31,56 @@ def _strip_mentions(text: str) -> str:
     return _MENTION_PLACEHOLDER.sub("", text).strip()
 
 
+def _normalize_message(msg_type: str, content: dict) -> tuple[str, str | None]:
+    """归一化飞书消息为 (text, image_key)。post 类型会自动提取文字 + 第一张图。"""
+    if msg_type == "text":
+        return _strip_mentions(content.get("text", "")), None
+    if msg_type == "image":
+        return "", content.get("image_key")
+    if msg_type == "post":
+        text_parts: list[str] = []
+        image_key: str | None = None
+        for line in content.get("content", []):
+            for tag in line:
+                tag_type = tag.get("tag")
+                if tag_type == "text":
+                    text_parts.append(tag.get("text", ""))
+                elif tag_type == "img" and image_key is None:
+                    image_key = tag.get("image_key")
+                # 'at' tag 直接忽略（在群聊里就是 @bot 本身）
+        return " ".join(text_parts).strip(), image_key
+    return "", None
+
+
+async def _execute_image_skill(skill_name: str, image_key: str, message_id: str, user_id: str) -> None:
+    """下载图片 → 调 skill → 上传结果 → 回图。统一的 image-skill 执行路径。"""
+    skill = get_registry().get(skill_name)
+    if skill is None:
+        await reply_text(_client, message_id, f"未知 skill: {skill_name}")
+        return
+    image_param = next((p for p in skill.params if p.type == "image"), None)
+    if image_param is None:
+        await reply_text(_client, message_id, f"skill {skill_name} 不接受图片输入")
+        return
+    try:
+        image_bytes = await download_image(_client, message_id, image_key)
+        params = {image_param.name: ("frame.png", image_bytes, "image/png")}
+        result_bytes = await execute(skill, params)
+        uploaded_key = await upload_image(_client, result_bytes)
+        await reply_image(_client, message_id, uploaded_key)
+    except Exception as e:
+        log.exception("image skill execution failed")
+        await reply_text(_client, message_id, f"处理失败：{e}")
+    finally:
+        await _store.clear(user_id)
+
+
+def _single_image_skill() -> str | None:
+    """如果只有一个接受 image 输入的 skill，返回它的名字；否则 None。"""
+    skills = [s for s in get_registry().values() if any(p.type == "image" for p in s.params)]
+    return skills[0].name if len(skills) == 1 else None
+
+
 def on_message(data) -> None:
     """lark-oapi dispatcher 是同步的，把 async 任务挂到已运行的事件循环上。"""
     try:
@@ -49,33 +99,41 @@ async def _process(data) -> None:
     content = json.loads(msg.content)
     log.info(f"[MSG] chat={chat_id} type={chat_type}/{msg_type} user={user_id} content={content}")
 
+    text, image_key = _normalize_message(msg_type, content)
     session = await _store.get(user_id)
 
-    if msg_type == "image" and session.state == "collecting" and session.pending_param:
-        image_key = content.get("image_key", "")
-        image_bytes = await download_image(_client, message_id, image_key)
-        skill = get_registry()[session.skill_name]
-        params = dict(session.collected_params)
-        params[session.pending_param] = ("frame.png", image_bytes, "image/png")
-        try:
-            result_bytes = await execute(skill, params)
-            uploaded_key = await upload_image(_client, result_bytes)
-            await reply_image(_client, message_id, uploaded_key)
-        except Exception as e:
-            log.exception("skill execution failed")
-            await reply_text(_client, message_id, f"处理失败：{e}")
-        await _store.clear(user_id)
+    # 智能路径 1：用户一次性给了 text + image（典型场景：群里 @bot 配图说意图）
+    if text and image_key:
+        action = await decide(text, session.model_dump_json())
+        log.info(f"[ACT] {action}")
+        if action.action == "select_skill" and action.skill_name:
+            await _execute_image_skill(action.skill_name, image_key, message_id, user_id)
+            return
+        # text 不构成 select_skill，回退到纯 image 自动路由
+        single = _single_image_skill()
+        if single:
+            await _execute_image_skill(single, image_key, message_id, user_id)
+            return
+
+    # 智能路径 2：多轮对话中正在收图（state=collecting 且 pending=image）
+    if image_key and session.state == "collecting" and session.pending_param:
+        await _execute_image_skill(session.skill_name, image_key, message_id, user_id)
         return
 
-    if msg_type != "text":
-        await reply_text(_client, message_id, "请发送文字描述你想做什么，或上传图片。")
+    # 智能路径 3：用户裸发一张图，session 是 idle —— 若只有 1 个 image skill，直接执行
+    if image_key:
+        single = _single_image_skill()
+        if single:
+            await _execute_image_skill(single, image_key, message_id, user_id)
+            return
+        await reply_text(_client, message_id, "你想用这张图做什么？请告诉我。")
         return
 
-    text = _strip_mentions(content.get("text", ""))
+    # 纯文字路径
     if not text:
-        # 群里只 @bot 没说内容，给个引导
-        await reply_text(_client, message_id, "在吗？请告诉我你想做什么，比如「帮我去白底」。")
+        await reply_text(_client, message_id, "请告诉我你想做什么，比如「帮我去白底」。")
         return
+
     action = await decide(text, session.model_dump_json())
     log.info(f"[ACT] {action}")
 
