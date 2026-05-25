@@ -1,4 +1,4 @@
-from src.main import _strip_mentions, _normalize_message, _load_lazy_resource
+from src.main import _strip_mentions, _normalize_message, _load_lazy_resource, _is_retry
 from src.skill.schema import Skill, HttpBackend, SkillOutput
 
 
@@ -105,3 +105,61 @@ def test_lazy_resource_loads_real_file(tmp_path, monkeypatch):
 
     s = _make_skill_with_lazy({"lookup_characters": "demo.tsv"})
     assert _load_lazy_resource(s, "lookup_characters") == "a\tb\nc\td"
+
+
+def test_is_retry_exact_phrases():
+    for p in ["再来一张", "再来", "再生成", "again", "Again", "重新生成"]:
+        assert _is_retry(p), f"{p} should be retry"
+
+
+def test_is_retry_with_punctuation():
+    assert _is_retry("再来一张！")
+    assert _is_retry("再来。")
+    assert _is_retry("再来 ")
+
+
+def test_is_retry_negative():
+    for p in ["再来一张，但是改成竖版", "换标题", "好的", "不调整", ""]:
+        assert not _is_retry(p), f"{p} should NOT be retry"
+
+
+# --- enum options block ---
+from src.main import _enum_options_block
+from src.skill.schema import SkillParam
+
+
+def _skill_with_enum(values: list[str], name: str = "fmt") -> Skill:
+    return Skill(
+        name="test",
+        description="t",
+        api=HttpBackend(endpoint_path="/x"),
+        params=[SkillParam(name=name, type="enum", values=values, required=True, prompt_to_user="格式")],
+        output=SkillOutput(type="image_binary", display_as="feishu_image"),
+    )
+
+
+def test_enum_options_block_appends():
+    s = _skill_with_enum(["png", "jpg", "webp"])
+    block = _enum_options_block(s, "fmt")
+    assert "📋 格式 可选值" in block
+    assert "- png" in block and "- jpg" in block and "- webp" in block
+
+
+def test_enum_options_block_skips_non_enum():
+    s = Skill(
+        name="t", description="t",
+        api=HttpBackend(endpoint_path="/x"),
+        params=[SkillParam(name="txt", type="text", required=True, prompt_to_user="自由文本")],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+    )
+    assert _enum_options_block(s, "txt") == ""
+
+
+def test_enum_options_block_unknown_param():
+    s = _skill_with_enum(["a", "b"])
+    assert _enum_options_block(s, "no_such_param") == ""
+
+
+def test_enum_options_block_none_inputs():
+    assert _enum_options_block(None, "fmt") == ""
+    assert _enum_options_block(_skill_with_enum(["a"]), None) == ""

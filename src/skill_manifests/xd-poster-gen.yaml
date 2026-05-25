@@ -31,7 +31,44 @@ api:
   poll_interval_sec: 3
   poll_timeout_sec: 300
 
-params: []
+# enum params：harness 在 ask_param 时会自动追加可选值列表到 reply，
+# 兜底防 LLM 漏列选项。values 必须与 references/options.md 同步。
+# 非 enum 字段（actionDesc / textContent 等自由文本）不在此处声明。
+params:
+  - name: compositionType
+    type: enum
+    required: true
+    values:
+      - default
+      - lefttext_rightimg
+      - leftimg_righttext
+      - toptext_bottomimg
+      - topimg_bottomtext
+      - center
+      - triangle
+      - symmetry
+      - surround
+      - diagonal
+      - curve
+    prompt_to_user: 排版构图
+  - name: ratio
+    type: enum
+    required: false
+    values:
+      - "2:3"
+      - "9:16"
+      - "1:1"
+      - "3:2"
+      - "16:9"
+    prompt_to_user: 比例
+  - name: resolution
+    type: enum
+    required: false
+    values:
+      - "1K"
+      - "2K"
+      - "4K"
+    prompt_to_user: 清晰度
 
 output:
   type: image_url

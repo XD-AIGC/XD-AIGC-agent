@@ -14,11 +14,49 @@ from src.orchestrator.llm import router_decide, skill_decide
 from src.session.redis_store import SessionStore
 from src.skill.executor import execute, SkillExecutionError
 from src.skill.registry import get_registry
-from src.skill.schema import Skill
+from src.skill.schema import Skill, PollBackend
 from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
 
 _SKILLS_DIR = Path(__file__).parent.parent / "skills"
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
+
+# Per-user 串行化锁：同 user 的消息不并发处理，避免 submit 阻塞期间新消息进 LLM 瞎回
+_user_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_user_lock(user_id: str) -> asyncio.Lock:
+    lock = _user_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+    return lock
+
+
+# 完全匹配触发 retry 快路径（不进 LLM 直接重 submit）
+_RETRY_PHRASES = {
+    "再来一张", "再来一个", "再来", "再生成", "再画一张", "再做一张",
+    "重新生成", "重做", "again",
+}
+
+
+def _is_retry(text: str) -> bool:
+    t = text.strip().rstrip("。.!！?？ ").lower()
+    return t in {p.lower() for p in _RETRY_PHRASES}
+
+
+def _enum_options_block(skill: Skill | None, param_name: str | None) -> str:
+    """如果 param 是 skill 声明过的 enum 字段，返回追加到 reply 的可选值块；否则空串。
+
+    兜底防 LLM 漏列选项；无论 LLM 是否自己列了，都追加一遍（确定性 > 简洁性）。
+    """
+    if skill is None or not param_name:
+        return ""
+    param = next((p for p in skill.params if p.name == param_name), None)
+    if param is None or param.type != "enum" or not param.values:
+        return ""
+    lines = [f"\n\n📋 {param.prompt_to_user} 可选值（回复其中一个）："]
+    lines.extend(f"- {v}" for v in param.values)
+    return "\n".join(lines)
 
 
 async def _reply_with_result(message_id: str, result) -> None:
@@ -134,6 +172,12 @@ async def _process(data) -> None:
     content = json.loads(msg.content)
     log.info(f"[MSG] chat={chat_id} type={chat_type}/{msg_type} user={user_id} content={content}")
 
+    # 同一 user 的消息串行化：submit 阻塞期间新消息排队等候
+    async with _get_user_lock(user_id):
+        await _process_locked(message_id, msg_type, content, user_id)
+
+
+async def _process_locked(message_id: str, msg_type: str, content: dict, user_id: str) -> None:
     text, image_key = _normalize_message(msg_type, content)
     session = await _store.get(user_id)
 
@@ -174,6 +218,31 @@ async def _process(data) -> None:
 
 async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> None:
     """主决策循环：根据 mode 调 router/skill，自动 handle lookup，遇到终态退出。"""
+    # Retry 快路径：session 已完成 + 用户说「再来一张」类短语 → 不进 LLM，直接重 submit
+    if (
+        session.completed
+        and session.mode == "skill"
+        and session.skill_name
+        and session.collected_params
+        and _is_retry(text)
+    ):
+        skill = get_registry().get(session.skill_name)
+        if skill is not None:
+            log.info(f"[RETRY] skill={session.skill_name} payload_keys={list(session.collected_params.keys())}")
+            if isinstance(skill.api, PollBackend):
+                await reply_text(_client, message_id, "✅ 已开始重新生成，预计 30-60 秒，请稍候…")
+            try:
+                result = await execute(skill, session.collected_params)
+                await _reply_with_result(message_id, result)
+                # session.completed 保持 True，允许继续连续 retry
+                await _store.save(user_id, session)
+            except SkillExecutionError as e:
+                await reply_text(_client, message_id, f"处理失败：{e}")
+            except Exception as e:
+                log.exception("retry submit failed")
+                await reply_text(_client, message_id, f"处理失败：{e}")
+            return
+
     lookup_count = 0
     current_text = text
 
@@ -235,7 +304,10 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
         if action.action == "ask_param":
             session.pending_param = action.param_name
-            await reply_text(_client, message_id, action.message or "请提供参数。")
+            skill = get_registry().get(session.skill_name) if session.skill_name else None
+            base_msg = action.message or "请提供参数。"
+            full_msg = base_msg + _enum_options_block(skill, action.param_name)
+            await reply_text(_client, message_id, full_msg)
             await _store.save(user_id, session)
             return
 
@@ -261,7 +333,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 first_param = next((p for p in skill.params if p.required), None)
                 if first_param:
                     session.pending_param = first_param.name
-                    await reply_text(_client, message_id, first_param.prompt_to_user)
+                    msg = first_param.prompt_to_user + _enum_options_block(skill, first_param.name)
+                    await reply_text(_client, message_id, msg)
                     await _store.save(user_id, session)
                 else:
                     result = await execute(skill, {})
@@ -272,6 +345,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         if action.action == "submit":
             skill = get_registry().get(session.skill_name)
             payload = action.submit_payload or session.collected_params
+            # 异步 skill 通常要 30-60s，先给用户一个"开始生成"信号
+            if isinstance(skill.api, PollBackend):
+                await reply_text(_client, message_id, "✅ 已开始生成，预计 30-60 秒，请稍候…")
             try:
                 result = await execute(skill, payload)
                 await _reply_with_result(message_id, result)
@@ -282,6 +358,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 # 把上次提交的 payload 也存进 collected_params，让下轮 LLM 看到
                 if isinstance(payload, dict):
                     session.collected_params.update(payload)
+                session.completed = True  # 触发 retry 快路径 + LLM completed 引导
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
                 await reply_text(_client, message_id, f"处理失败：{e}")

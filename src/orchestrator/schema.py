@@ -36,5 +36,7 @@ class UserSession(BaseModel):
     loaded_resources: dict[str, str] = Field(default_factory=dict)
     # 进入 skill mode 时的原始用户请求，每轮 skill_decide 都注入避免 LLM 失忆
     initial_intent: Optional[str] = None
+    # 上一次 submit 是否已成功；True 时新消息走 retry 快路径或 adjust 流程
+    completed: bool = False
     # 向后兼容字段（旧 Redis 数据反序列化用，新代码逻辑通过 mode 判断）
     state: Literal["idle", "collecting"] = "idle"
