@@ -21,10 +21,24 @@ Phase 3：v0.1 端到端跑通（frame-bg-remover 真后端） ✅
 - [x] **A4**：URL 类型结果下载（阿里云 OSS）+ 上传飞书
 - [x] **A5**：接入 xd-poster-gen 复杂 skill（SKILL.md 6790 字符 + 41 角色 TSV）
 - [x] **A5 实战修复**：submit 保留 session + initial_intent 防失忆 + hallucination 防御 + reply 长度保护
-- [ ] **A6**：完整 Memory（cachedStep1FileId 持久化复用 step1）— 半成品（session 保留已做，cachedStep1 提取未做）
-- [ ] **A7**：测试 + 文档收尾
+- [x] **A6**：完整 Memory（cachedStep1FileId 持久化复用 step1）— `Step1Cache` Redis 24h TTL，每 user 独立，命中省 30-60s
+- [x] **A7-docs**：`docs/SKILL-SPEC.md` 给同事的 skill 接入契约
+- [ ] **A7-e2e**：E2E 测试套（mock 飞书+LLM+toolbox）—— 推迟到 Phase 5 部署前
 
-**Commit 历史**：`5efe66b → 0e49b2b → 1abb093 → 1eb5cdd → 7c2760c → f8a05e0 → 80a6720 → 61b2519 → 62dcf28 → 745a592`（共 10 个）
+**Commit 历史**：`5efe66b → 0e49b2b → 1abb093 → 1eb5cdd → 7c2760c → f8a05e0 → 80a6720 → 61b2519 → 62dcf28 → 745a592 → df943fa`（共 11 个，2026-05-26 收工版）
+
+### 2026-05-26 凌晨追加（A5 实战修复 + A6 + A7-docs）
+
+A5 实战测试发现并修复：
+- **Per-user lock**：同 user 消息串行化，submit 阻塞期间新消息排队
+- **session.completed + retry 快路径**：submit 后 completed=True，"再来一张"等短语不进 LLM 直接重 execute
+- **submit 即时反馈**："✅ 已开始生成…"
+- **collected_params > initial_intent 优先级 prompt + 用户纠错处理**
+- **Enum 兜底**：ask_param 时自动追加 📋 可选值列表
+- **Prompts 抽离**到 `src/orchestrator/prompts/*.md`
+- **A6 Step1 cache**：跳过 step1，每 user 独立，Redis 24h TTL
+
+**A5 残留**：用户"放权"时 LLM 仍跳过 enum 字段直接 submit —— 见 [issue #1](https://github.com/XD-AIGC/XD-AIGC-agent/issues/1)（待同事改 SKILL.md "自由发挥"语义）
 
 ## ⏳ Phase 5 — 生产部署（下次推进）
 

@@ -75,6 +75,7 @@ contact.  docx.  drive.  bitable.  calendar.  mail.  wiki.
 |------|------|
 | `docs/ARCHITECTURE.md` | 架构图 / 技术栈 / LLM schema / Skill 系统 / frame-bg-remover API / 目录结构 |
 | `docs/PHASE.md` | Phase 0-3 详细进度 / 新 session 启动 checklist / 写代码自检（完整版） |
+| `docs/SKILL-SPEC.md` | 给同事的 skill 接入契约：manifest / SkillParam / Backend / enum 兜底 / SKILL.md 写作规范 |
 
 ### Vault（推理过程 / 决策依据 / 对话历史）
 

@@ -8,7 +8,7 @@
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.config import TOOLBOX_BASE_URL
@@ -24,6 +24,8 @@ class ExecuteResult:
     content_bytes: Optional[bytes] = None
     result_url: Optional[str] = None
     text: Optional[str] = None
+    # poll backend 完成时塞完整 poll_data，供调用方提取 intermediateImages 等额外字段
+    metadata: dict = field(default_factory=dict)
 
 
 class SkillExecutionError(Exception):
@@ -103,7 +105,7 @@ async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
                     result_url = _extract_by_path(poll_data, api.result_path)
                 except (KeyError, IndexError, TypeError) as e:
                     raise SkillExecutionError(f"完成但取结果失败 (path={api.result_path}): {e}")
-                return ExecuteResult(kind="url", result_url=result_url)
+                return ExecuteResult(kind="url", result_url=result_url, metadata=poll_data)
 
 
 # ---- 公共入口 ----

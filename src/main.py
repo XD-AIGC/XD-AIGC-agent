@@ -12,6 +12,7 @@ from pathlib import Path
 
 from src.orchestrator.llm import router_decide, skill_decide
 from src.session.redis_store import SessionStore
+from src.session.step1_cache import Step1Cache
 from src.skill.executor import execute, SkillExecutionError
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend
@@ -42,6 +43,35 @@ _RETRY_PHRASES = {
 def _is_retry(text: str) -> bool:
     t = text.strip().rstrip("。.!！?？ ").lower()
     return t in {p.lower() for p in _RETRY_PHRASES}
+
+
+async def _maybe_inject_cached_step1(payload: dict, user_id: str) -> dict:
+    """如果 payload 含 characters + actionDesc 且未指定 cachedStep1FileId，查 cache 命中就注入。"""
+    if not isinstance(payload, dict) or payload.get("cachedStep1FileId"):
+        return payload
+    chars = payload.get("characters") or []
+    action_desc = payload.get("actionDesc")
+    if not chars or not action_desc:
+        return payload
+    cached = await _step1_cache.get(user_id, chars, action_desc)
+    if cached:
+        log.info(f"[CACHE HIT] step1 fileId={cached[:32]} chars={chars} actionDesc={action_desc[:40]!r}")
+        return {**payload, "cachedStep1FileId": cached}
+    return payload
+
+
+async def _maybe_save_cached_step1(payload: dict, result, user_id: str) -> None:
+    """从 poll result.metadata.intermediateImages.characterActionFileId 提取并存 cache。"""
+    if not isinstance(payload, dict):
+        return
+    chars = payload.get("characters") or []
+    action_desc = payload.get("actionDesc")
+    if not chars or not action_desc:
+        return
+    file_id = (result.metadata or {}).get("intermediateImages", {}).get("characterActionFileId")
+    if file_id:
+        await _step1_cache.save(user_id, chars, action_desc, file_id)
+        log.info(f"[CACHE SAVE] step1 fileId={file_id[:32]} chars={chars}")
 
 
 def _enum_options_block(skill: Skill | None, param_name: str | None) -> str:
@@ -92,6 +122,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 _store = SessionStore()
+_step1_cache = Step1Cache()
 _client = build_client()
 
 _OUT_OF_SCOPE = "我只能帮你：去除图片背景（抠图）。请告诉我你想做什么。"
@@ -229,11 +260,13 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         skill = get_registry().get(session.skill_name)
         if skill is not None:
             log.info(f"[RETRY] skill={session.skill_name} payload_keys={list(session.collected_params.keys())}")
+            payload = await _maybe_inject_cached_step1(dict(session.collected_params), user_id)
             if isinstance(skill.api, PollBackend):
                 await reply_text(_client, message_id, "✅ 已开始重新生成，预计 30-60 秒，请稍候…")
             try:
-                result = await execute(skill, session.collected_params)
+                result = await execute(skill, payload)
                 await _reply_with_result(message_id, result)
+                await _maybe_save_cached_step1(payload, result, user_id)
                 # session.completed 保持 True，允许继续连续 retry
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
@@ -345,12 +378,14 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         if action.action == "submit":
             skill = get_registry().get(session.skill_name)
             payload = action.submit_payload or session.collected_params
+            payload = await _maybe_inject_cached_step1(dict(payload) if isinstance(payload, dict) else payload, user_id)
             # 异步 skill 通常要 30-60s，先给用户一个"开始生成"信号
             if isinstance(skill.api, PollBackend):
                 await reply_text(_client, message_id, "✅ 已开始生成，预计 30-60 秒，请稍候…")
             try:
                 result = await execute(skill, payload)
                 await _reply_with_result(message_id, result)
+                await _maybe_save_cached_step1(payload, result, user_id)
                 # 保留 session（同一 skill 下用户可能想「再来一张」「换个标题」）
                 # 清掉 pending_param 和 loaded_resources 节省 token，但保留 skill_name + collected_params
                 session.pending_param = None
