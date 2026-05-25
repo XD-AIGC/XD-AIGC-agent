@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import lark_oapi as lark
 
 from src.feishu.adapter import build_client, build_event_handler
@@ -21,6 +22,14 @@ _client = build_client()
 
 _OUT_OF_SCOPE = "我只能帮你：去除图片背景（抠图）。请告诉我你想做什么。"
 
+# 飞书群里 @mention 在 content.text 里渲染为 "@_user_N" 占位符
+_MENTION_PLACEHOLDER = re.compile(r"@_user_\d+\s*")
+
+
+def _strip_mentions(text: str) -> str:
+    """去掉群里 @mention 占位符（@_user_1 / @_user_2 ...），便于 LLM 理解纯意图。"""
+    return _MENTION_PLACEHOLDER.sub("", text).strip()
+
 
 def on_message(data) -> None:
     """lark-oapi dispatcher 是同步的，把 async 任务挂到已运行的事件循环上。"""
@@ -34,9 +43,11 @@ async def _process(data) -> None:
     msg = data.event.message
     message_id = msg.message_id
     msg_type = msg.message_type
+    chat_id = msg.chat_id
+    chat_type = getattr(msg, "chat_type", "p2p")
     user_id = data.event.sender.sender_id.open_id
     content = json.loads(msg.content)
-    log.info(f"[MSG] user={user_id} type={msg_type} content={content}")
+    log.info(f"[MSG] chat={chat_id} type={chat_type}/{msg_type} user={user_id} content={content}")
 
     session = await _store.get(user_id)
 
@@ -60,7 +71,11 @@ async def _process(data) -> None:
         await reply_text(_client, message_id, "请发送文字描述你想做什么，或上传图片。")
         return
 
-    text = content.get("text", "").strip()
+    text = _strip_mentions(content.get("text", ""))
+    if not text:
+        # 群里只 @bot 没说内容，给个引导
+        await reply_text(_client, message_id, "在吗？请告诉我你想做什么，比如「帮我去白底」。")
+        return
     action = await decide(text, session.model_dump_json())
     log.info(f"[ACT] {action}")
 
