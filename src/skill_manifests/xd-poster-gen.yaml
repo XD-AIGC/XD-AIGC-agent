@@ -1,0 +1,42 @@
+# 心动小镇运营海报对话式生成 — harness manifest
+#
+# 设计原则：
+# - 同事维护 skills/xd-poster-gen-skill/SKILL.md 和 references/，我们不动
+# - 本 manifest 只描述「harness 怎么调 backend」+「lazy load 哪些资源」
+# - skill_md_path 指向的 SKILL.md 会整段加载到 system_prompt_core，作为 Skill Mode 的子 prompt
+#
+# 端到端流程：
+#   用户 →「画一张海报」→ router 选中本 skill → 进 Skill Mode
+#   → skill_decide 按 SKILL.md 引导收 brief
+#   → 收齐 → action=submit + 完整 payload
+#   → executor PollBackend 提交 → 轮询 → 拿 image URL → 下载 → 上传飞书 → 回图
+
+name: xd-poster-gen
+description: 心动小镇运营海报对话式生成。9 个 brief 字段（角色/动作/标题/排版/色调/比例等），自动收集并生成。
+
+skill_md_path: skills/xd-poster-gen-skill/SKILL.md
+
+api:
+  type: poll
+  submit_path: /xd-poster-studio-v2/api/generate-v2
+  submit_method: POST
+  submit_content_type: application/json
+  poll_path_template: /xd-poster-studio-v2/api/poll-v2/{job_id}
+  job_id_field: v2JobId
+  status_field: status
+  done_value: completed
+  failed_value: failed
+  error_field: error
+  result_path: images[0].url
+  poll_interval_sec: 3
+  poll_timeout_sec: 300
+
+params: []
+
+output:
+  type: image_url
+  display_as: feishu_image
+
+lazy_resources:
+  lookup_characters: xd-poster-gen-skill/references/characters.tsv
+  lookup_options: xd-poster-gen-skill/references/options.md
