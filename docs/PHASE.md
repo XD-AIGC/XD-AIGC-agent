@@ -37,14 +37,21 @@
 - [ ] 装依赖：`lark-oapi langgraph pydantic redis httpx python-dotenv`
 - [ ] **审查 import**：只 `lark_oapi.api.im`，禁止 `lark_oapi.api.docx/drive/bitable/calendar/contact/mail`
 
-## ⏳ Phase 3 — v0.1 端到端
+## ✅ Phase 3 — v0.1 端到端（本地开发完成，2026-05-25）
 
-- [ ] 写 `skills/frame-bg-remover.yaml`
-- [ ] 实现 5 核心组件：`feishu/` + `orchestrator/` + `skill/` + `session/` + `http_client/allowlist.py`
-- [ ] CI grep 脚本 `ci/check-banned-apis.sh`（禁用 API 命中即 fail）
+- [x] 写 `skills/frame-bg-remover.yaml`
+- [x] 实现 5 核心组件：`feishu/` + `orchestrator/` + `skill/` + `session/` + `http_client/allowlist.py`
+- [x] CI grep 脚本 `ci/check-banned-apis.sh`（禁用 API 命中即 fail）
+- [x] 21 个 pytest 全绿（schema / registry / allowlist / session / orchestrator）
+- [x] Mock toolbox `tools/mock_toolbox.py`（端到端验证用，echo PNG）
+- [x] 端到端跑通：飞书 → 文字描述 → 上传图 → mock toolbox → 返图（WebSocket 模式）
+- [x] 解决飞书事件路由问题（根因：必须 `im:message.p2p_msg:readonly` 细粒度权限，详见 vault `feishu-event-permission-gate`）
+
+### 待办（生产部署相关）
+
 - [ ] L20_1 创建专用 `toolbox-bot` 服务账号；Dockerfile 加 `USER toolbox-bot`
 - [ ] toolbox Gateway 为 bot 单发专属 service token（不复用 Johnny 凭证）
-- [ ] 端到端跑通：飞书 → 上传图 → 去白底 → 返图
+- [ ] `.env` 生产值（TOOLBOX_BASE_URL 指向 L20_1 真实端口）+ 白名单同步更新
 - [ ] Docker + systemd 部署
 - [ ] 试点同事使用 2-3 天，收集反馈
 
