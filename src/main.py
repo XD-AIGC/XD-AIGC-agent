@@ -7,7 +7,7 @@ import lark_oapi as lark
 from src.feishu.adapter import build_client, build_event_handler
 from src.feishu.reply import reply_text, reply_image
 from src.feishu.upload import upload_image
-from src.feishu.download import download_image
+from src.feishu.download import download_image, download_url
 from pathlib import Path
 
 from src.orchestrator.llm import router_decide, skill_decide
@@ -19,6 +19,19 @@ from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
 
 _SKILLS_DIR = Path(__file__).parent.parent / "skills"
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
+
+
+async def _reply_with_result(message_id: str, result) -> None:
+    """统一处理 ExecuteResult 三种返回：binary 直接上传；url 下载再上传；text 文字回复。"""
+    if result.kind == "binary":
+        uploaded_key = await upload_image(_client, result.content_bytes)
+        await reply_image(_client, message_id, uploaded_key)
+    elif result.kind == "url":
+        img_bytes = await download_url(result.result_url)
+        uploaded_key = await upload_image(_client, img_bytes)
+        await reply_image(_client, message_id, uploaded_key)
+    else:
+        await reply_text(_client, message_id, result.text or "完成")
 
 
 def _load_lazy_resource(skill: Skill, action_name: str) -> str:
@@ -89,14 +102,7 @@ async def _execute_image_skill(skill_name: str, image_key: str, message_id: str,
         image_bytes = await download_image(_client, message_id, image_key)
         params = {image_param.name: ("frame.png", image_bytes, "image/png")}
         result = await execute(skill, params)
-        if result.kind == "binary":
-            uploaded_key = await upload_image(_client, result.content_bytes)
-            await reply_image(_client, message_id, uploaded_key)
-        elif result.kind == "url":
-            # A4 阶段实现：从 URL 下载图片再上传飞书
-            await reply_text(_client, message_id, f"完成（URL 返回未实现）：{result.result_url}")
-        else:
-            await reply_text(_client, message_id, result.text or "完成")
+        await _reply_with_result(message_id, result)
     except Exception as e:
         log.exception("image skill execution failed")
         await reply_text(_client, message_id, f"处理失败：{e}")
@@ -254,11 +260,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                     await _store.save(user_id, session)
                 else:
                     result = await execute(skill, {})
-                    if result.kind == "binary":
-                        uploaded_key = await upload_image(_client, result.content_bytes)
-                        await reply_image(_client, message_id, uploaded_key)
-                    else:
-                        await reply_text(_client, message_id, result.text or str(result.result_url or "完成"))
+                    await _reply_with_result(message_id, result)
                     await _store.clear(user_id)
                 return
 
@@ -267,13 +269,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             payload = action.submit_payload or session.collected_params
             try:
                 result = await execute(skill, payload)
-                if result.kind == "binary":
-                    uploaded_key = await upload_image(_client, result.content_bytes)
-                    await reply_image(_client, message_id, uploaded_key)
-                elif result.kind == "url":
-                    await reply_text(_client, message_id, f"完成：{result.result_url}")  # A4 阶段会改成下载并 upload
-                else:
-                    await reply_text(_client, message_id, result.text or "完成")
+                await _reply_with_result(message_id, result)
             except SkillExecutionError as e:
                 await reply_text(_client, message_id, f"处理失败：{e}")
             except Exception as e:
