@@ -1,73 +1,81 @@
 # Phase 进度 — XD-AIGC-agent
 
-> 本项目按 Phase 0→3 推进。每个 Phase 完成后更新本文 + vault `log.md`。
+> 本项目按 Phase 0→6 推进。每个 Phase 完成后更新本文 + vault `log.md`。
 > 主决策记录在 `H:\Obsidian-Vault\Johnny-Knowledge-Base\wiki\synthesis\aigc-toolbox-bot-architecture-2026-05.md`
 
-## ✅ 已完成（2026-05-25）
+## ✅ Phase 0-3 全部完成（2026-05-25）
 
-- 决策：七道隔离闸
-- 决策：仓库归属（`D:\GIT\XD-AIGC-agent`）+ conda env（`xd-aigc-agent`）
-- 决策：用户范围策略（白名单 → 全员两阶段）
-- 决策：首期试点工具 `frame-bg-remover`
-- 摸清 frame-bg-remover API（详见 ARCHITECTURE.md）
-- Johnny 操作：收回 Hermes 飞书 bot 对同事的授权
+Phase 0：清理 Hermes 残留 ✅
+Phase 1：飞书 App「AIGC bot」(`cli_aa99420199f9dbd8`) 已建 + 0.1.4 发布 ✅
+Phase 2：仓库骨架 + conda env + 21 测试全绿 ✅
+Phase 3：v0.1 端到端跑通（frame-bg-remover 真后端） ✅
 
-## 🔄 Phase 0 — 清理 Hermes 残留风险（Johnny 操作）
+## ✅ Phase 4 — 架构升级支持复杂 skill（2026-05-25 夜）
 
-这两步不做，Hermes 的飞书文档泄露风险持续存在。
+参考 Anthropic 「Building Effective Agents」+「Effective Context Engineering」两篇文章
+重构架构，从「单 skill workflow」升级为「multi-skill harness with context engineering」。
 
-- [ ] 飞书开发者后台 → Hermes 当前 App → 撤销除 `im:message` / `im:resource` 之外的所有 scope
-  - 重点撤：`docx:*` / `drive:*` / `bitable:*` / `calendar:*` / `mail:*` / `contact:*` / `wiki:*`
-- [ ] 删除 Hermes 加载的所有 `lark-*` 非 IM skill（`lark-doc` `lark-drive` `lark-base` `lark-calendar` `lark-mail` `lark-contact` `lark-im` `lark-task` `lark-okr` `lark-attendance` `lark-approval` `lark-vc` `lark-wiki` `lark-minutes`）
+- [x] **A1**：Skill loader 双格式（YAML 简单 / manifest+SKILL.md 复杂）
+- [x] **A2**：SkillBackend 抽象（HTTP 同步 / Poll 异步两种）
+- [x] **A3**：Router/Skill 双模式 + 8-action enum + lazy load
+- [x] **A4**：URL 类型结果下载（阿里云 OSS）+ 上传飞书
+- [x] **A5**：接入 xd-poster-gen 复杂 skill（SKILL.md 6790 字符 + 41 角色 TSV）
+- [x] **A5 实战修复**：submit 保留 session + initial_intent 防失忆 + hallucination 防御 + reply 长度保护
+- [ ] **A6**：完整 Memory（cachedStep1FileId 持久化复用 step1）— 半成品（session 保留已做，cachedStep1 提取未做）
+- [ ] **A7**：测试 + 文档收尾
 
-## ⏳ Phase 1 — 飞书 App（Johnny 操作）
+**Commit 历史**：`5efe66b → 0e49b2b → 1abb093 → 1eb5cdd → 7c2760c → f8a05e0 → 80a6720 → 61b2519 → 62dcf28 → 745a592`（共 10 个）
 
-- [ ] 飞书开发者后台新建 App「XD AIGC Toolbox」
-  - **权限管理**：只勾 `im:message` + `im:resource`，**绝不勾任何其他**
-  - **事件订阅**：连接方式选「长连接（WebSocket）」
-  - **机器人**：启用
-  - **可用范围**：先填 Johnny + 1-2 个试点同事
-- [ ] 记录 App ID / App Secret（不要贴对话，写本地 `.env`）
-
-## ⏳ Phase 2 — 仓库与环境
-
-- [ ] 按 ARCHITECTURE.md "目录结构" 起骨架
-- [ ] `git init` + `.gitignore`（务必包含 `.env` / `__pycache__` / `*.log`）
-- [ ] `conda create -n xd-aigc-agent python=3.11`
-- [ ] 装依赖：`lark-oapi langgraph pydantic redis httpx python-dotenv`
-- [ ] **审查 import**：只 `lark_oapi.api.im`，禁止 `lark_oapi.api.docx/drive/bitable/calendar/contact/mail`
-
-## ✅ Phase 3 — v0.1 端到端（本地开发完成，2026-05-25）
-
-- [x] 写 `skills/frame-bg-remover.yaml`
-- [x] 实现 5 核心组件：`feishu/` + `orchestrator/` + `skill/` + `session/` + `http_client/allowlist.py`
-- [x] CI grep 脚本 `ci/check-banned-apis.sh`（禁用 API 命中即 fail）
-- [x] 21 个 pytest 全绿（schema / registry / allowlist / session / orchestrator）
-- [x] Mock toolbox `tools/mock_toolbox.py`（端到端验证用，echo PNG）
-- [x] 端到端跑通：飞书 → 文字描述 → 上传图 → mock toolbox → 返图（WebSocket 模式）
-- [x] 解决飞书事件路由问题（根因：必须 `im:message.p2p_msg:readonly` 细粒度权限，详见 vault `feishu-event-permission-gate`）
-
-### 待办（生产部署相关）
+## ⏳ Phase 5 — 生产部署（下次推进）
 
 - [ ] L20_1 创建专用 `toolbox-bot` 服务账号；Dockerfile 加 `USER toolbox-bot`
-- [ ] toolbox Gateway 为 bot 单发专属 service token（不复用 Johnny 凭证）
-- [ ] `.env` 生产值（TOOLBOX_BASE_URL 指向 L20_1 真实端口）+ 白名单同步更新
+- [ ] toolbox Gateway 为 bot 单发专属 service token
+- [ ] `.env` 生产值（TOOLBOX_BASE_URL=`http://localhost:80`，部署在 L20-1 就不需要 SSH 隧道）
 - [ ] Docker + systemd 部署
+- [ ] 飞书可用范围扩到全员
 - [ ] 试点同事使用 2-3 天，收集反馈
+
+## ⏳ Phase 6 — 扩展（按需）
+
+- [ ] A6 完整版：从 poll 结果提 `intermediateImages.characterActionFileId` 存 Redis，下次同角色同动作自动复用 cachedStep1FileId（省 30-60s）
+- [ ] ArtDAM 集成：OBO token exchange 端点（设计已在 vault `bot-obo-via-shared-sso`）
+- [ ] `docs/SKILL-SPEC.md`：给同事的 skill 接口契约文档
+- [ ] 更多 skill 接入（看同事产 SKILL.md 的进度）
 
 ## 新 Session 启动 Checklist
 
-1. 读 `CLAUDE.md`（硬约束）
-2. 读 vault 主架构页（路径见 CLAUDE.md "Vault 索引"）
-3. 查本文当前 Phase 状态
-4. 向 Johnny 确认这次推进哪个 Phase 哪个待办
-5. 开干前自检：本次改动是否触碰任何禁用 API / 任何隔离闸？
+1. 读 `CLAUDE.md`（硬约束 / 权限清单 / harness vs agent）
+2. 读本文（Phase 状态）
+3. 看 vault `feishu-event-permission-gate` 和 `bot-obo-via-shared-sso`（关键 insight）
+4. 看 `docs/ARCHITECTURE.md`（技术栈和目录结构）
+5. 向 Johnny 确认推进方向
+
+## 当前环境状态（2026-05-26 00:10 收工时）
+
+- Bot 进程：**已停**
+- SSH 隧道：`autossh -fNT -L 8080:localhost:80 ubuntu@10.102.80.15` 应该还在跑（pgrep 验证）
+- Redis：本地 `/tmp/redis-aigc.pid`
+- mock_toolbox：已删（A5 后用真 toolbox via 隧道）
+- 飞书 App 当前可用范围：Johnny + 几个测试同事（部分成员模式）
+
+## 启动 bot
+
+```bash
+cd /mnt/d/GIT/XD-AIGC-agent
+# 确认 SSH 隧道
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8080/api/shared/frame-bg-remover/process
+# 如果不通：
+ssh -fNT -L 8080:localhost:80 ubuntu@10.102.80.15
+
+# 启动 bot
+nohup /home/johnnyzxt/miniconda3/envs/xd-aigc-agent/bin/python -m src.main > bot.log 2>&1 &
+```
 
 ## 写代码自检（每次 commit 前）
 
 - [ ] 没 import `lark_oapi.api.docx/drive/bitable/calendar/contact/mail`
 - [ ] 没调 `message.create` / `chat.create` / `chat_members.*` / `contact.*`
-- [ ] 所有 HTTP 出站过白名单拦截器（只放 `localhost:80` + `open.feishu.cn`）
-- [ ] LLM 输出走 Pydantic schema（不接自由文本动作）
-- [ ] 没引入 Johnny 个人凭证（SSH key / git config / 个人 .env）
-- [ ] 新 skill 在 `skills/` 下且符合 YAML 格式
+- [ ] 所有 HTTP 出站过白名单（toolbox + open.feishu.cn + llm-proxy.tapsvc.com）
+- [ ] LLM 输出走 Pydantic schema（BotAction enum 8 个）
+- [ ] 新 skill 在 `skills/` 下（YAML）或 `src/skill_manifests/` 下（manifest 指向 SKILL.md）
+- [ ] CI `bash ci/check-banned-apis.sh` 必须通过
