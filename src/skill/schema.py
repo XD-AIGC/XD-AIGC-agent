@@ -1,29 +1,59 @@
-from typing import Literal
-from pydantic import BaseModel
+"""Skill schema 支持两种 backend：HTTP 单次 / Poll 异步。
+
+为了向后兼容 frame-bg-remover.yaml（没有 type 字段），HttpBackend.type 有 default 'http'。
+"""
+from typing import Literal, Optional, Union
+from pydantic import BaseModel, Field
 
 
 class SkillParam(BaseModel):
     name: str
-    type: Literal["enum", "text", "number", "image"]
+    type: Literal["enum", "text", "number", "image", "json"]
     values: list[str] = []
     required: bool = True
     prompt_to_user: str
 
 
 class SkillOutput(BaseModel):
-    type: Literal["image_url", "text", "image_binary"]
+    type: Literal["image_url", "image_binary", "text"]
     display_as: Literal["feishu_card", "feishu_image", "feishu_text"]
 
 
-class SkillAPI(BaseModel):
-    endpoint_path: str  # 相对路径（不含 host:port），实际 URL = TOOLBOX_BASE_URL + path
-    method: Literal["POST", "GET"]
-    content_type: Literal["multipart/form-data", "application/json"]
+class HttpBackend(BaseModel):
+    """单次 HTTP 调用，同步返回结果。frame-bg-remover 用这个。"""
+    type: Literal["http"] = "http"
+    endpoint_path: str
+    method: Literal["POST", "GET"] = "POST"
+    content_type: Literal["multipart/form-data", "application/json"] = "multipart/form-data"
+
+
+class PollBackend(BaseModel):
+    """异步任务：POST 拿 job_id → 轮询 → 完成后取结果。xd-poster-gen 用这个。"""
+    type: Literal["poll"]
+    submit_path: str
+    submit_method: Literal["POST", "GET"] = "POST"
+    submit_content_type: Literal["application/json", "multipart/form-data"] = "application/json"
+    poll_path_template: str
+    job_id_field: str = "v2JobId"
+    status_field: str = "status"
+    done_value: str = "completed"
+    failed_value: str = "failed"
+    error_field: str = "error"
+    result_path: str = "images[0].url"
+    poll_interval_sec: int = 3
+    poll_timeout_sec: int = 300
+
+
+SkillBackend = Union[HttpBackend, PollBackend]
 
 
 class Skill(BaseModel):
     name: str
     description: str
-    api: SkillAPI
+    api: SkillBackend = Field(discriminator="type")
     params: list[SkillParam]
     output: SkillOutput
+    # Always-on Core：Skill Mode 期间每轮都注入 LLM 的简短规则
+    system_prompt_core: Optional[str] = None
+    # Lazy-load 资源：key 是 action 名（如 'lookup_characters'），value 是文件路径（相对 skills/）
+    lazy_resources: dict[str, str] = {}

@@ -65,9 +65,15 @@ async def _execute_image_skill(skill_name: str, image_key: str, message_id: str,
     try:
         image_bytes = await download_image(_client, message_id, image_key)
         params = {image_param.name: ("frame.png", image_bytes, "image/png")}
-        result_bytes = await execute(skill, params)
-        uploaded_key = await upload_image(_client, result_bytes)
-        await reply_image(_client, message_id, uploaded_key)
+        result = await execute(skill, params)
+        if result.kind == "binary":
+            uploaded_key = await upload_image(_client, result.content_bytes)
+            await reply_image(_client, message_id, uploaded_key)
+        elif result.kind == "url":
+            # A4 阶段实现：从 URL 下载图片再上传飞书
+            await reply_text(_client, message_id, f"完成（URL 返回未实现）：{result.result_url}")
+        else:
+            await reply_text(_client, message_id, result.text or "完成")
     except Exception as e:
         log.exception("image skill execution failed")
         await reply_text(_client, message_id, f"处理失败：{e}")
@@ -151,9 +157,12 @@ async def _process(data) -> None:
             await reply_text(_client, message_id, first_param.prompt_to_user)
             await _store.save(user_id, session)
         else:
-            result_bytes = await execute(skill, {})
-            uploaded_key = await upload_image(_client, result_bytes)
-            await reply_image(_client, message_id, uploaded_key)
+            result = await execute(skill, {})
+            if result.kind == "binary":
+                uploaded_key = await upload_image(_client, result.content_bytes)
+                await reply_image(_client, message_id, uploaded_key)
+            else:
+                await reply_text(_client, message_id, result.text or str(result.result_url or "完成"))
             await _store.clear(user_id)
 
     elif action.action in ("ask_param", "reply"):
