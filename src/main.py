@@ -177,7 +177,10 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     lookup_count = 0
     current_text = text
 
+    iter_count = 0
     while True:
+        iter_count += 1
+        log.info(f"[LOOP iter={iter_count} mode={session.mode} skill={session.skill_name} text={current_text[:60]!r}]")
         if session.mode == "router":
             action = await router_decide(current_text, session)
         else:
@@ -210,7 +213,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             resource = _load_lazy_resource(skill, action.action)
             session.loaded_resources[action.action] = resource
             await _store.save(user_id, session)
-            current_text = f"[系统注入：{action.action} 资源已加载，请继续根据资源决定下一步 action]"
+            # 保持原始 user text 不变（资源已经在 session.loaded_resources 里，
+            # 下轮 skill_decide 会自动注入到 system prompt）
             continue
 
         # 终态 action：处理后退出循环
@@ -247,6 +251,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 session.mode = "skill"
                 session.loaded_resources = {}
                 session.collected_params = {}
+                session.initial_intent = text  # 记下原始意图，防止多轮后 LLM 忘
                 await _store.save(user_id, session)
                 current_text = f"[系统注入：用户刚选择了 skill `{skill.name}`。请按 SKILL.md 规则启动 brief 收集流程]"
                 continue
@@ -270,12 +275,21 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             try:
                 result = await execute(skill, payload)
                 await _reply_with_result(message_id, result)
+                # 保留 session（同一 skill 下用户可能想「再来一张」「换个标题」）
+                # 清掉 pending_param 和 loaded_resources 节省 token，但保留 skill_name + collected_params
+                session.pending_param = None
+                session.loaded_resources = {}
+                # 把上次提交的 payload 也存进 collected_params，让下轮 LLM 看到
+                if isinstance(payload, dict):
+                    session.collected_params.update(payload)
+                await _store.save(user_id, session)
             except SkillExecutionError as e:
                 await reply_text(_client, message_id, f"处理失败：{e}")
+                await _store.clear(user_id)
             except Exception as e:
                 log.exception("submit failed")
                 await reply_text(_client, message_id, f"处理失败：{e}")
-            await _store.clear(user_id)
+                await _store.clear(user_id)
             return
 
         log.warning(f"未处理的 action: {action.action}")

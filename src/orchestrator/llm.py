@@ -21,11 +21,12 @@ _ROUTER_SYSTEM = """\
 {skills}
 
 规则：
-1. 永远用中文回复
+1. 永远用中文回复，且回复要简短（< 200 字）
 2. 用户描述了具体意图（如「帮我去白底」「画张海报」）且匹配上面某个工具 → action=select_skill, skill_name=<工具 name>
 3. 用户在打招呼/闲聊/问你能做什么 → action=reply, message=<友好回复>
 4. 用户请求超出工具范围（如「帮我订机票」） → action=out_of_scope
 5. 不要自己回答用户「具体怎么做」的问题，那是工具的工作；你的工作是路由
+6. **不要输出 updated_params**——参数收集是 Skill Mode 的事，你只负责选 skill
 """
 
 
@@ -37,6 +38,7 @@ _SKILL_SYSTEM = """\
 {skill_core}
 
 【当前 session 状态】
+- 用户原始请求（不要忘）: {initial_intent}
 - 已收集参数（collected_params）: {collected_params}
 - 上一轮待确认参数（pending_param）: {pending_param}
 
@@ -55,6 +57,10 @@ _SKILL_SYSTEM = """\
 - 如果用户答了你上一轮 pending_param，把答案放进 updated_params: {{"<param_name>": "<value>"}}
 - submit 前必须确保 SKILL.md 里的所有 required 字段都在 collected_params 里
 - 永远用中文回复
+- **回复消息（reply/ask_param 的 message 字段）必须简短，< 1500 字**
+- updated_params 的 key 必须用 SKILL.md 定义的英文字段名（如 characters / actionDesc / textContent），不要用中文
+- **绝对禁止编造数据**：角色名/key/排版选项等任何 SKILL.md 外的数据，必须先 lookup_characters 或 lookup_options 拿到真实清单后才能引用。如果 loaded_resources 里没有相应资源，且你想列角色或选项，**必须先输出 lookup_characters / lookup_options action，不要凭印象编造**。
+- 用户给的角色名（如"奇奇"）如果不在 loaded_resources 的 characters.tsv 里，**直接告诉用户"没找到这个角色，请改一个"**，不要假装它存在
 """
 
 
@@ -90,6 +96,7 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
         skill_name=skill.name,
         skill_description=skill.description,
         skill_core=skill.system_prompt_core or "（无额外规则）",
+        initial_intent=session.initial_intent or "（用户当前消息即首次请求）",
         collected_params=json.dumps(session.collected_params, ensure_ascii=False),
         pending_param=session.pending_param or "无",
         loaded_resources_block=_format_loaded_resources(session.loaded_resources),

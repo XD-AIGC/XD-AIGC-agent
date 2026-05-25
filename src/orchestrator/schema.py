@@ -34,5 +34,7 @@ class UserSession(BaseModel):
     collected_params: dict = Field(default_factory=dict)
     pending_param: Optional[str] = None
     loaded_resources: dict[str, str] = Field(default_factory=dict)
+    # 进入 skill mode 时的原始用户请求，每轮 skill_decide 都注入避免 LLM 失忆
+    initial_intent: Optional[str] = None
     # 向后兼容字段（旧 Redis 数据反序列化用，新代码逻辑通过 mode 判断）
     state: Literal["idle", "collecting"] = "idle"
