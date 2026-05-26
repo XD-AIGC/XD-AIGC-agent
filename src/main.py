@@ -355,9 +355,10 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                     return
                 resource = _load_lazy_resource(skill, action.action)
                 session.loaded_resources[action.action] = resource
-            # 把 lookup 动作写进对话历史，让 LLM 下轮能看到"我自己做过这件事"
-            # 等效于 tool calling 框架里的 tool result turn，防止 LLM 重复调用
-            _append_history(session, "assistant", f"[已执行 {action.action}，数据已加载，请直接使用]")
+            # lookup 后把 current_text 换成"继续"信号。
+            # 原因：若保持原始"[系统注入：用户刚选择了 skill...]"，LLM 每轮都判断为
+            # 新开始而重复 lookup。换成明确的继续指令，LLM 才能判断"上步已完成"。
+            current_text = f"[{action.action} 已完成，数据已在已加载资源中，请继续下一步]"
             await _store.save(user_id, session)
             lookup_count += 1
             if lookup_count > _MAX_AUTO_LOOKUPS_PER_TURN:
