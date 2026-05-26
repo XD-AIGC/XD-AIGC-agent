@@ -33,11 +33,11 @@ sudo chmod 750 /etc/xd-aigc-agent
 ```bash
 # 在开发机：把源码 rsync 到服务器
 rsync -av --exclude='.git' --exclude='.env' --exclude='bot.log' \
-    /mnt/d/GIT/XD-AIGC-agent/ ubuntu@10.102.80.15:/tmp/xd-aigc-agent-build/
+    /mnt/d/GIT/XD-AIGC-agent/ ubuntu@10.102.80.15:/AIGC_Group/XD-AIGC-agent/
 
 # ssh 到服务器
 ssh ubuntu@10.102.80.15
-cd /tmp/xd-aigc-agent-build
+cd /AIGC_Group/XD-AIGC-agent
 sudo docker build -t xd-aigc-agent:latest .
 sudo docker images xd-aigc-agent  # 验证
 ```
@@ -56,7 +56,7 @@ ssh ubuntu@10.102.80.15 'sudo docker load < /tmp/xd-aigc-agent.tar.gz'
 ### 2.2 配置 `.env`
 ```bash
 # 在服务器上，第一次部署需要拷模板并填密钥
-sudo cp /tmp/xd-aigc-agent-build/.env.example.prod /etc/xd-aigc-agent/.env
+sudo cp /AIGC_Group/XD-AIGC-agent/.env.example.prod /etc/xd-aigc-agent/.env
 sudo chmod 600 /etc/xd-aigc-agent/.env
 sudo chown root:root /etc/xd-aigc-agent/.env
 sudo vim /etc/xd-aigc-agent/.env  # 填 FEISHU_APP_SECRET / LLM_API_KEY
@@ -75,7 +75,7 @@ sudo docker run --rm --network=host --env-file=/etc/xd-aigc-agent/.env \
 
 ### 2.4 安装 systemd 服务
 ```bash
-sudo cp /tmp/xd-aigc-agent-build/deploy/xd-aigc-agent.service /etc/systemd/system/
+sudo cp /AIGC_Group/XD-AIGC-agent/deploy/xd-aigc-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now xd-aigc-agent
 sudo systemctl status xd-aigc-agent  # 应该 active (running)
@@ -101,9 +101,9 @@ sudo journalctl -u xd-aigc-agent --since '10 min ago' | grep -E "ERROR|MSG|ACT"
 ## 4. 升级流程（已部署后）
 
 ```bash
-# 1. rsync 新代码到 /tmp/xd-aigc-agent-build/
+# 1. rsync 新代码到 /AIGC_Group/XD-AIGC-agent/
 # 2. 在服务器
-cd /tmp/xd-aigc-agent-build
+cd /AIGC_Group/XD-AIGC-agent
 sudo docker build -t xd-aigc-agent:latest .
 sudo systemctl restart xd-aigc-agent  # 滚动重启，~10s 完成
 sudo journalctl -u xd-aigc-agent -f   # 验证启动成功
