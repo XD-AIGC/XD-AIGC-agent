@@ -15,8 +15,10 @@ from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
 from src.skill.executor import execute, SkillExecutionError
 from src.skill.registry import get_registry
-from src.skill.schema import Skill, PollBackend
+from src.skill.schema import Skill, PollBackend, HttpResource
+from src.http_client.allowlist import allowed_client
 from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
+import time
 
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
 
@@ -134,20 +136,52 @@ class LazyResourceError(Exception):
     """lazy_resource 配置或文件缺失。区分于"数据加载成功但内容为空"。"""
 
 
-def _load_lazy_resource(skill: Skill, action_name: str) -> str:
-    """根据 skill.lazy_resources 配置加载资源文件内容。
+# HTTP 资源缓存：url → (fetched_at_ts, content)
+_http_resource_cache: dict[str, tuple[float, str]] = {}
 
-    registry 已经把路径解析成绝对路径（manifest 同目录起算）。
-    资源未配置或文件不存在时抛 LazyResourceError，不要返回错误字符串当数据用——
+
+async def _load_lazy_resource(skill: Skill, action_name: str) -> str:
+    """根据 skill.lazy_resources 配置加载资源内容（文件或 HTTP）。
+
+    支持两种类型：
+    - str（文件路径，registry 已转绝对）：直接 read_text
+    - HttpResource（HTTP 端点，registry 已注册到 allowlist）：GET/POST 拉，带 TTL 缓存
+
+    资源未配置 / 文件不存在 / HTTP 失败均抛 LazyResourceError——
     LLM 把错误字符串当"已加载"会无法判断而陷入重复 lookup 死循环。
     """
-    abs_path_str = skill.lazy_resources.get(action_name)
-    if not abs_path_str:
+    resource = skill.lazy_resources.get(action_name)
+    if resource is None:
         raise LazyResourceError(f"{action_name} 未在 manifest.yaml 配置 lazy_resources")
-    abs_path = Path(abs_path_str)
-    if not abs_path.exists():
-        raise LazyResourceError(f"资源文件不存在: {abs_path_str}")
-    return abs_path.read_text(encoding="utf-8")
+
+    if isinstance(resource, str):
+        abs_path = Path(resource)
+        if not abs_path.exists():
+            raise LazyResourceError(f"资源文件不存在: {resource}")
+        return abs_path.read_text(encoding="utf-8")
+
+    if isinstance(resource, HttpResource):
+        return await _fetch_http_resource(resource)
+
+    raise LazyResourceError(f"未知 lazy_resource 类型: {type(resource).__name__}")
+
+
+async def _fetch_http_resource(res: HttpResource) -> str:
+    """HTTP 拉取资源，带内存 TTL 缓存避免每轮都打后端。"""
+    now = time.time()
+    cached = _http_resource_cache.get(res.url)
+    if cached and res.cache_ttl_sec > 0 and (now - cached[0]) < res.cache_ttl_sec:
+        return cached[1]
+    try:
+        async with allowed_client() as client:
+            resp = await client.request(res.method, res.url, timeout=10.0)
+            resp.raise_for_status()
+            content = resp.text
+    except Exception as e:
+        raise LazyResourceError(f"HTTP 拉取失败 {res.url}: {type(e).__name__}: {e}") from e
+    if res.cache_ttl_sec > 0:
+        _http_resource_cache[res.url] = (now, content)
+    return content
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -360,7 +394,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                     await reply_text(_client, message_id, "内部错误：skill 丢失")
                     return
                 try:
-                    resource = _load_lazy_resource(skill, action.action)
+                    resource = await _load_lazy_resource(skill, action.action)
                 except LazyResourceError as e:
                     # 资源配置缺失立即报错，不让 LLM 不停 retry
                     log.error(f"[LAZY] skill={skill.name} {action.action} 失败: {e}")

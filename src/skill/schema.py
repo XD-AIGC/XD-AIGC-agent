@@ -47,6 +47,22 @@ class PollBackend(BaseModel):
 SkillBackend = Union[HttpBackend, PollBackend]
 
 
+class HttpResource(BaseModel):
+    """HTTP 类型的 lazy_resource：动态从 URL 拉取，带 TTL 缓存。
+
+    用于 toolbox 子工具暴露的列表端点（如 /api/characters?refresh=1）。
+    URL 必须是绝对地址，且其 host+port 会被自动加入 agent HTTP 白名单。
+    """
+    type: Literal["http"]
+    url: str
+    method: Literal["GET", "POST"] = "GET"
+    cache_ttl_sec: int = 300  # 内存缓存秒数，0 = 不缓存
+
+
+# 两种来源：字符串 = 文件路径（registry 转成绝对路径）；dict = HTTP 配置
+LazyResource = Union[str, HttpResource]
+
+
 class Skill(BaseModel):
     name: str
     description: str
@@ -55,5 +71,6 @@ class Skill(BaseModel):
     output: SkillOutput
     # Always-on Core：Skill Mode 期间每轮都注入 LLM 的简短规则
     system_prompt_core: Optional[str] = None
-    # Lazy-load 资源：key 是 action 名（如 'lookup_characters'），value 是文件路径（相对 skills/）
-    lazy_resources: dict[str, str] = {}
+    # Lazy-load 资源：key 是 action 名（如 'lookup_characters'）；
+    # value 可以是相对文件路径（file 类型）或 HttpResource dict（http 类型）
+    lazy_resources: dict[str, LazyResource] = {}

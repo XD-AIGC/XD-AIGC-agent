@@ -12,10 +12,20 @@ _ALLOWED_PREFIXES = (
     "https://llm-proxy.tapsvc.com",
 )
 
+# 运行时由 registry 注册的额外前缀（来自 manifest 里 HttpResource 的 host+port）
+_DYNAMIC_PREFIXES: set[str] = set()
+
+
+def register_allowed_prefix(prefix: str) -> None:
+    """注册一个动态白名单前缀。供 skill registry 在加载 HttpResource 时调用。"""
+    _DYNAMIC_PREFIXES.add(_normalize(prefix))
+
 
 def _url_allowed(url: str) -> bool:
     normalised = _normalize(url)
-    return any(normalised.startswith(prefix) for prefix in _ALLOWED_PREFIXES)
+    if any(normalised.startswith(p) for p in _ALLOWED_PREFIXES):
+        return True
+    return any(normalised.startswith(p) for p in _DYNAMIC_PREFIXES)
 
 
 class AllowlistTransport(httpx.AsyncBaseTransport):

@@ -47,13 +47,32 @@ def _load_skill_dir(skill_dir: Path) -> Skill | None:
         skill_md = (skill_dir / skill_md_relpath).read_text(encoding="utf-8")
         raw["system_prompt_core"] = skill_md
 
-    # lazy_resources 路径转成绝对路径（agent 加载时直接 read_text）
+    # lazy_resources：字符串当文件路径转绝对；dict 是 HttpResource 配置，原样传
+    # HTTP 类型的 URL 自动加入 agent HTTP 白名单（注册时一次性）
     if "lazy_resources" in raw:
-        raw["lazy_resources"] = {
-            k: str(skill_dir / v) for k, v in raw["lazy_resources"].items()
-        }
+        transformed = {}
+        for k, v in raw["lazy_resources"].items():
+            if isinstance(v, str):
+                transformed[k] = str(skill_dir / v)
+            elif isinstance(v, dict):
+                transformed[k] = v
+                if v.get("type") == "http" and "url" in v:
+                    _register_http_resource_url(v["url"])
+            else:
+                log.warning(f"skill {skill_dir.name} lazy_resources[{k}] 未知类型: {type(v).__name__}")
+        raw["lazy_resources"] = transformed
 
     return Skill.model_validate(_ensure_api_type(raw))
+
+
+def _register_http_resource_url(url: str) -> None:
+    """把 HTTP 资源的 host+port 加入 agent 出站白名单。"""
+    from urllib.parse import urlparse
+    from src.http_client.allowlist import register_allowed_prefix
+
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        register_allowed_prefix(f"{parsed.scheme}://{parsed.netloc}")
 
 
 def load_skills() -> dict[str, Skill]:

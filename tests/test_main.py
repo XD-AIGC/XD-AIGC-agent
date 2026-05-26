@@ -75,6 +75,10 @@ def test_normalize_post_first_image_wins():
 
 # ---- _load_lazy_resource ----
 
+import pytest
+from src.main import LazyResourceError
+
+
 def _make_skill_with_lazy(lazy_map: dict) -> Skill:
     return Skill(
         name="t", description="d",
@@ -85,22 +89,43 @@ def _make_skill_with_lazy(lazy_map: dict) -> Skill:
     )
 
 
-def test_lazy_resource_missing_config():
+async def test_lazy_resource_missing_config():
     s = _make_skill_with_lazy({})
-    assert "没有配置" in _load_lazy_resource(s, "lookup_characters")
+    with pytest.raises(LazyResourceError, match="未在 manifest"):
+        await _load_lazy_resource(s, "lookup_characters")
 
 
-def test_lazy_resource_file_not_exist():
+async def test_lazy_resource_file_not_exist():
     s = _make_skill_with_lazy({"lookup_characters": "non/existent/path.tsv"})
-    assert "不存在" in _load_lazy_resource(s, "lookup_characters")
+    with pytest.raises(LazyResourceError, match="不存在"):
+        await _load_lazy_resource(s, "lookup_characters")
 
 
-def test_lazy_resource_loads_real_file(tmp_path):
+async def test_lazy_resource_loads_real_file(tmp_path):
     # registry 现在传绝对路径给 skill.lazy_resources，agent 直接 read
     demo = tmp_path / "demo.tsv"
     demo.write_text("a\tb\nc\td", encoding="utf-8")
     s = _make_skill_with_lazy({"lookup_characters": str(demo)})
-    assert _load_lazy_resource(s, "lookup_characters") == "a\tb\nc\td"
+    assert await _load_lazy_resource(s, "lookup_characters") == "a\tb\nc\td"
+
+
+async def test_lazy_resource_http_type_calls_url(monkeypatch):
+    """HTTP 类型的 lazy_resource：调 _fetch_http_resource，结果返回给调用方。"""
+    from src.skill.schema import HttpResource
+    from src import main as main_mod
+
+    captured = {}
+
+    async def fake_fetch(res):
+        captured["url"] = res.url
+        return '[{"key":"aiai","name":"皑皑"}]'
+
+    monkeypatch.setattr(main_mod, "_fetch_http_resource", fake_fetch)
+    http_res = HttpResource(type="http", url="http://localhost:8090/api/characters", cache_ttl_sec=0)
+    s = _make_skill_with_lazy({"lookup_characters": http_res})
+    result = await _load_lazy_resource(s, "lookup_characters")
+    assert captured["url"] == "http://localhost:8090/api/characters"
+    assert "皑皑" in result
 
 
 def test_is_retry_exact_phrases():
