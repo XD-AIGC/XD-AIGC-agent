@@ -348,21 +348,24 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
         # 自动 continue：lazy load 资源后再问 LLM
         if action.action in ("lookup_characters", "lookup_options"):
+            if action.action in session.loaded_resources:
+                # 资源已加载，LLM 忽略了 system prompt 的提示又来请求——
+                # 不重新读文件，但仍计入次数防死循环
+                log.warning(f"[LOOP] {action.action} already loaded, LLM ignored hint")
+            else:
+                skill = get_registry().get(session.skill_name)
+                if skill is None:
+                    await reply_text(_client, message_id, "内部错误：skill 丢失")
+                    return
+                resource = _load_lazy_resource(skill, action.action)
+                session.loaded_resources[action.action] = resource
+                await _store.save(user_id, session)
             lookup_count += 1
             if lookup_count > _MAX_AUTO_LOOKUPS_PER_TURN:
                 log.warning(f"超过 {_MAX_AUTO_LOOKUPS_PER_TURN} 次 lookup，回退")
                 await reply_text(_client, message_id, "处理超时，请重新描述需求。")
                 await _store.clear(user_id)
                 return
-            skill = get_registry().get(session.skill_name)
-            if skill is None:
-                await reply_text(_client, message_id, "内部错误：skill 丢失")
-                return
-            resource = _load_lazy_resource(skill, action.action)
-            session.loaded_resources[action.action] = resource
-            await _store.save(user_id, session)
-            # 保持原始 user text 不变（资源已经在 session.loaded_resources 里，
-            # 下轮 skill_decide 会自动注入到 system prompt）
             continue
 
         # 终态 action：处理后退出循环
