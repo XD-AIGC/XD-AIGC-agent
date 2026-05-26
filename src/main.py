@@ -45,6 +45,22 @@ def _is_retry(text: str) -> bool:
     return t in {p.lower() for p in _RETRY_PHRASES}
 
 
+_HISTORY_MAX_TURNS = 10  # 最近 10 条（5 轮 user+assistant）
+_HISTORY_MAX_CHAR = 800  # 单条 truncate 防 context 撑爆
+
+
+def _append_history(session, role: str, content: str) -> None:
+    """把一条 message 加到 session.chat_history，自动 truncate + 滚动保留最近 N 条。"""
+    if not content:
+        return
+    if len(content) > _HISTORY_MAX_CHAR:
+        content = content[:_HISTORY_MAX_CHAR] + "...(truncated)"
+    session.chat_history.append({"role": role, "content": content})
+    # 只留最近 N 条
+    if len(session.chat_history) > _HISTORY_MAX_TURNS:
+        session.chat_history = session.chat_history[-_HISTORY_MAX_TURNS:]
+
+
 def _friendly_skill_error(e: Exception) -> str:
     """把后端技术错误转成用户友好提示。"""
     msg = str(e)
@@ -292,6 +308,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
     lookup_count = 0
     current_text = text
+    # 把本轮用户原始输入加进 history（仅一次，loop 内部 lookup continue 时不重复加）
+    _append_history(session, "user", text)
 
     iter_count = 0
     while True:
@@ -349,7 +367,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             return
 
         if action.action == "reply":
-            await reply_text(_client, message_id, action.message or "")
+            msg = action.message or ""
+            await reply_text(_client, message_id, msg)
+            _append_history(session, "assistant", msg)
             await _store.save(user_id, session)
             return
 
@@ -364,6 +384,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             base_msg = action.message or "请提供参数。"
             full_msg = base_msg + _enum_options_block(skill, action.param_name)
             await reply_text(_client, message_id, full_msg)
+            _append_history(session, "assistant", full_msg)
             await _store.save(user_id, session)
             return
 

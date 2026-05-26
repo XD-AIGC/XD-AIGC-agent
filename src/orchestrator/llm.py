@@ -67,12 +67,13 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
         loaded_resources_block=_format_loaded_resources(session.loaded_resources),
         completed_block=_COMPLETED_GUIDE if session.completed else "",
     )
+    # 多轮对话：system + 历史 + 当前 user，让 LLM 看到自己上轮 reply（如 ABC 候选）
+    messages: list[dict] = [{"role": "system", "content": sys_prompt}]
+    messages.extend(session.chat_history)
+    messages.append({"role": "user", "content": user_message})
     resp = await _client.beta.chat.completions.parse(
         model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_message},
-        ],
+        messages=messages,
         response_format=BotAction,
     )
     return resp.choices[0].message.parsed

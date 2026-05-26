@@ -193,3 +193,42 @@ def test_friendly_error_failed():
 def test_friendly_error_generic():
     msg = _friendly_skill_error(ConnectionError("Network unreachable"))
     assert "ConnectionError" in msg and "稍后再试" in msg
+
+
+# --- chat history ---
+from src.main import _append_history, _HISTORY_MAX_TURNS, _HISTORY_MAX_CHAR
+from src.orchestrator.schema import UserSession as _US
+
+
+def test_append_history_basic():
+    s = _US()
+    _append_history(s, "user", "hi")
+    _append_history(s, "assistant", "hello")
+    assert s.chat_history == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+
+
+def test_append_history_truncates_long_content():
+    s = _US()
+    long = "x" * (_HISTORY_MAX_CHAR + 100)
+    _append_history(s, "assistant", long)
+    assert s.chat_history[0]["content"].endswith("...(truncated)")
+    assert len(s.chat_history[0]["content"]) <= _HISTORY_MAX_CHAR + 20
+
+
+def test_append_history_rolling_window():
+    s = _US()
+    for i in range(_HISTORY_MAX_TURNS + 5):
+        _append_history(s, "user", f"msg{i}")
+    assert len(s.chat_history) == _HISTORY_MAX_TURNS
+    # 最早 5 条被丢
+    assert s.chat_history[0]["content"] == "msg5"
+    assert s.chat_history[-1]["content"] == f"msg{_HISTORY_MAX_TURNS + 4}"
+
+
+def test_append_history_empty_content_noop():
+    s = _US()
+    _append_history(s, "user", "")
+    assert s.chat_history == []

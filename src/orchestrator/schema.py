@@ -38,5 +38,8 @@ class UserSession(BaseModel):
     initial_intent: Optional[str] = None
     # 上一次 submit 是否已成功；True 时新消息走 retry 快路径或 adjust 流程
     completed: bool = False
+    # 最近 N 条 user/assistant 对话给 LLM 看，避免它忘记自己上轮 reply 了什么
+    # 格式：[{"role": "user"|"assistant", "content": str}]
+    chat_history: list[dict] = Field(default_factory=list)
     # 向后兼容字段（旧 Redis 数据反序列化用，新代码逻辑通过 mode 判断）
     state: Literal["idle", "collecting"] = "idle"
