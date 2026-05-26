@@ -24,7 +24,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 # 不升 pip — pip 26+ strict resolver 在某些环境与 pydantic-core 死锁
-RUN pip install .
+# 用清华镜像（国内服务器 files.pythonhosted.org 经常超时）
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    --trusted-host pypi.tuna.tsinghua.edu.cn \
+    --timeout 60 --retries 5 .
 
 # 业务辅助资源（skills/ 不进镜像 — 由独立仓库 XD-AIGC-skills 维护，runtime 通过 -v mount）
 COPY scripts ./scripts
