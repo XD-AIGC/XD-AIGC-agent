@@ -163,3 +163,33 @@ def test_enum_options_block_unknown_param():
 def test_enum_options_block_none_inputs():
     assert _enum_options_block(None, "fmt") == ""
     assert _enum_options_block(_skill_with_enum(["a"]), None) == ""
+
+
+# --- friendly error mapping ---
+from src.main import _friendly_skill_error
+from src.skill.executor import SkillExecutionError
+
+
+def test_friendly_error_timeout():
+    msg = _friendly_skill_error(SkillExecutionError("任务 v2_xxx 轮询超时（300s）"))
+    assert "⏰" in msg and "超时" in msg
+
+
+def test_friendly_error_timeout_english():
+    msg = _friendly_skill_error(Exception("connect timeout"))
+    assert "⏰" in msg
+
+
+def test_friendly_error_invalid_response():
+    msg = _friendly_skill_error(SkillExecutionError("submit 成功但缺 job_id 字段 'jobId'"))
+    assert "意外格式" in msg
+
+
+def test_friendly_error_failed():
+    msg = _friendly_skill_error(SkillExecutionError("任务失败：bad params"))
+    assert "❌" in msg or "失败" in msg
+
+
+def test_friendly_error_generic():
+    msg = _friendly_skill_error(ConnectionError("Network unreachable"))
+    assert "ConnectionError" in msg and "稍后再试" in msg

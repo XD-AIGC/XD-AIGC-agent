@@ -26,7 +26,11 @@ htmlcov
 # 测试 / 开发用
 tests
 debug_ws.py
+debug_ws.log
 tools/
+
+# Skill assets：227MB 的角色图/预览图，agent 不读（只读 SKILL.md + references/）
+skills/*/assets/
 
 # 文档（不需要进镜像，节省层）
 docs

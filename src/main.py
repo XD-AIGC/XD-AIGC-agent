@@ -45,6 +45,19 @@ def _is_retry(text: str) -> bool:
     return t in {p.lower() for p in _RETRY_PHRASES}
 
 
+def _friendly_skill_error(e: Exception) -> str:
+    """把后端技术错误转成用户友好提示。"""
+    msg = str(e)
+    if "轮询超时" in msg or "timeout" in msg.lower():
+        return "⏰ 生成超时，后端可能繁忙。可以说「再来一张」重试，或换个角色/动作试试。"
+    if "submit 成功但缺" in msg or "完成但取结果失败" in msg:
+        return "⚠️ 后端返回了意外格式，已记录。请稍后重试，或换个简单一点的需求。"
+    if "任务失败" in msg or "failed" in msg.lower():
+        return f"❌ 后端处理失败：{msg.split('：', 1)[-1][:80]}\n可以试试换个角色/动作。"
+    # 其他（网络断 / 4xx / 5xx）
+    return f"⚠️ 处理失败（{type(e).__name__}），稍后再试一次。"
+
+
 async def _maybe_inject_cached_step1(payload: dict, user_id: str) -> dict:
     """如果 payload 含 characters + actionDesc 且未指定 cachedStep1FileId，查 cache 命中就注入。"""
     if not isinstance(payload, dict) or payload.get("cachedStep1FileId"):
@@ -270,10 +283,11 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 # session.completed 保持 True，允许继续连续 retry
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
-                await reply_text(_client, message_id, f"处理失败：{e}")
+                await reply_text(_client, message_id, _friendly_skill_error(e))
+                # 保留 session，用户可继续 retry 或 adjust
             except Exception as e:
                 log.exception("retry submit failed")
-                await reply_text(_client, message_id, f"处理失败：{e}")
+                await reply_text(_client, message_id, _friendly_skill_error(e))
             return
 
     lookup_count = 0
@@ -405,12 +419,13 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 session.completed = True  # 触发 retry 快路径 + LLM completed 引导
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
-                await reply_text(_client, message_id, f"处理失败：{e}")
-                await _store.clear(user_id)
+                await reply_text(_client, message_id, _friendly_skill_error(e))
+                # 保留 session 让用户能 retry / adjust，不 clear
+                await _store.save(user_id, session)
             except Exception as e:
                 log.exception("submit failed")
-                await reply_text(_client, message_id, f"处理失败：{e}")
-                await _store.clear(user_id)
+                await reply_text(_client, message_id, _friendly_skill_error(e))
+                await _store.save(user_id, session)
             return
 
         log.warning(f"未处理的 action: {action.action}")
