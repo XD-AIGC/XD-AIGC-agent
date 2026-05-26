@@ -40,14 +40,22 @@ A5 实战测试发现并修复：
 
 **A5 残留**：用户"放权"时 LLM 仍跳过 enum 字段直接 submit —— 见 [issue #1](https://github.com/XD-AIGC/XD-AIGC-agent/issues/1)（待同事改 SKILL.md "自由发挥"语义）
 
-## ⏳ Phase 5 — 生产部署（下次推进）
+## 🚀 Phase 5 — 生产部署（本地产物 done，等执行）
 
-- [ ] L20_1 创建专用 `toolbox-bot` 服务账号；Dockerfile 加 `USER toolbox-bot`
-- [ ] toolbox Gateway 为 bot 单发专属 service token
-- [ ] `.env` 生产值（TOOLBOX_BASE_URL=`http://localhost:80`，部署在 L20-1 就不需要 SSH 隧道）
-- [ ] Docker + systemd 部署
-- [ ] 飞书可用范围扩到全员
-- [ ] 试点同事使用 2-3 天，收集反馈
+本地产物已完备：
+- [x] **Dockerfile** + `.dockerignore` — python:3.11-slim，user uid 1100，HEALTHCHECK 内置
+- [x] **deploy/xd-aigc-agent.service** — systemd unit，docker run host network + read-only
+- [x] **scripts/healthcheck.py** — Redis/LLM/toolbox 三路 ping，退出码 0/1
+- [x] **.env.example.prod** — 生产配置模板（无真值）
+- [x] **docs/DEPLOY.md** — 部署手册（前置/构建/.env/healthcheck/systemd/升级/排查/安全清单）
+
+下一步（需要 SSH 到 L20_1，本地做不了）：
+- [ ] 创建 toolbox-bot 服务账号（uid 1100）
+- [ ] LLM proxy 维护者给 bot 单发 service token
+- [ ] 部署 `.env` 到 `/etc/xd-aigc-agent/.env`
+- [ ] 跑 healthcheck + 装 systemd + 启动
+- [ ] 飞书后台扩可用范围（5-10 人试点）
+- [ ] 试点 2-3 天收集反馈
 
 ## ⏳ Phase 6 — 扩展（按需）
 

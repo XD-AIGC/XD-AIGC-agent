@@ -1,0 +1,46 @@
+# 保密 / 本地态：永远不进镜像
+.env
+.env.local
+*.log
+bot.log
+nohup.out
+
+# Git / IDE
+.git
+.gitignore
+.idea
+.vscode
+*.swp
+
+# Python 临时文件
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.coverage
+htmlcov
+.mypy_cache
+.ruff_cache
+
+# 测试 / 开发用
+tests
+debug_ws.py
+tools/
+
+# 文档（不需要进镜像，节省层）
+docs
+README.md
+CLAUDE.md
+
+# CI 脚本（构建时不需要）
+ci
+
+# Docker 元数据自身
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,42 @@
+# systemd unit — XD-AIGC-agent 飞书机器人
+# 部署：sudo cp deploy/xd-aigc-agent.service /etc/systemd/system/
+#       sudo systemctl daemon-reload && sudo systemctl enable --now xd-aigc-agent
+#
+# 设计：直接用 docker 跑（不引入 docker-compose 作为系统依赖）
+
+[Unit]
+Description=XD-AIGC-agent 飞书 bot
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+# 启动前清理可能的残留容器
+ExecStartPre=-/usr/bin/docker rm -f xd-aigc-agent
+
+# 主进程：前台跑 docker，systemd 才能托管生命周期
+# 注意 --network=host：bot 需要访问本机 toolbox（localhost:80）和 Redis
+ExecStart=/usr/bin/docker run --rm \
+    --name xd-aigc-agent \
+    --network=host \
+    --env-file=/etc/xd-aigc-agent/.env \
+    --read-only \
+    --tmpfs /tmp \
+    --user 1100:1100 \
+    --restart=no \
+    xd-aigc-agent:latest
+
+ExecStop=/usr/bin/docker stop -t 20 xd-aigc-agent
+
+# journal 收日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xd-aigc-agent
+
+[Install]
+WantedBy=multi-user.target
