@@ -95,15 +95,11 @@ def test_lazy_resource_file_not_exist():
     assert "不存在" in _load_lazy_resource(s, "lookup_characters")
 
 
-def test_lazy_resource_loads_real_file(tmp_path, monkeypatch):
-    # 临时在 skills 目录下造一个测试资源文件
-    import src.main as main_mod
-    fake_skills_dir = tmp_path / "skills"
-    fake_skills_dir.mkdir()
-    (fake_skills_dir / "demo.tsv").write_text("a\tb\nc\td", encoding="utf-8")
-    monkeypatch.setattr(main_mod, "_SKILLS_DIR", fake_skills_dir)
-
-    s = _make_skill_with_lazy({"lookup_characters": "demo.tsv"})
+def test_lazy_resource_loads_real_file(tmp_path):
+    # registry 现在传绝对路径给 skill.lazy_resources，agent 直接 read
+    demo = tmp_path / "demo.tsv"
+    demo.write_text("a\tb\nc\td", encoding="utf-8")
+    s = _make_skill_with_lazy({"lookup_characters": str(demo)})
     assert _load_lazy_resource(s, "lookup_characters") == "a\tb\nc\td"
 
 

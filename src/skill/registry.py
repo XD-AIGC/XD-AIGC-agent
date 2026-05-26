@@ -1,24 +1,30 @@
-"""Skill registry：两种格式都支持。
+"""Skill registry：从 SKILLS_DIR 扫描，每个 skill 一个目录 + manifest.yaml。
 
-格式 1：单文件 YAML
-    skills/foo.yaml                              # 简单 skill，frame-bg-remover 用
+新结构（与 https://github.com/XD-AIGC/XD-AIGC-skills 对齐）：
 
-格式 2：manifest + 外部 SKILL.md（同事维护 SKILL.md，我们不动）
-    src/skill_manifests/foo.yaml                 # 我们维护的 manifest（含 API 契约 + skill_md_path）
-    skills/foo-skill/SKILL.md                    # 同事维护的对话规则
-    skills/foo-skill/references/*                # 同事维护的资源
+    SKILLS_DIR/
+    ├── xd-poster-gen/
+    │   ├── manifest.yaml       ← 必有，agent 加载凭这个
+    │   ├── SKILL.md            ← 可选，complex skill 用
+    │   ├── references/         ← 可选，lazy_resources 引用
+    │   └── assets/             ← 可选，agent 不读
+    └── frame-bg-remover/
+        └── manifest.yaml       ← simple skill，没 SKILL.md
 
-加载流程：
-  - 扫 skills/*.yaml → 简单 skill
-  - 扫 src/skill_manifests/*.yaml → 复杂 skill，按 manifest 里的 skill_md_path 加载 SKILL.md 作 system_prompt_core
+manifest 内所有路径（skill_md_path / lazy_resources.*）都相对 manifest 所在目录。
+
+无 manifest.yaml 的目录（如同事的 Claude Code skill）被跳过，agent 看不到。
 """
-import yaml
+import logging
 from pathlib import Path
+
+import yaml
+
+from src.config import SKILLS_DIR
 from src.skill.schema import Skill
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
-_SIMPLE_SKILLS_DIR = _PROJECT_ROOT / "skills"
-_MANIFESTS_DIR = _PROJECT_ROOT / "src" / "skill_manifests"
+log = logging.getLogger(__name__)
+
 _registry: dict[str, Skill] = {}
 
 
@@ -29,33 +35,45 @@ def _ensure_api_type(raw: dict) -> dict:
     return raw
 
 
-def _load_simple_skill(path: Path) -> Skill:
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return Skill.model_validate(_ensure_api_type(raw))
+def _load_skill_dir(skill_dir: Path) -> Skill | None:
+    """从一个 skill 目录加载 manifest.yaml + 同目录 SKILL.md（可选）+ 解析路径。"""
+    manifest = skill_dir / "manifest.yaml"
+    if not manifest.exists():
+        return None  # 无 manifest 的目录跳过（如 Claude Code skill）
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
 
-
-def _load_manifest_skill(manifest_path: Path) -> Skill:
-    raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     skill_md_relpath = raw.pop("skill_md_path", None)
     if skill_md_relpath:
-        skill_md = (_PROJECT_ROOT / skill_md_relpath).read_text(encoding="utf-8")
+        skill_md = (skill_dir / skill_md_relpath).read_text(encoding="utf-8")
         raw["system_prompt_core"] = skill_md
+
+    # lazy_resources 路径转成绝对路径（agent 加载时直接 read_text）
+    if "lazy_resources" in raw:
+        raw["lazy_resources"] = {
+            k: str(skill_dir / v) for k, v in raw["lazy_resources"].items()
+        }
+
     return Skill.model_validate(_ensure_api_type(raw))
 
 
 def load_skills() -> dict[str, Skill]:
+    """扫 SKILLS_DIR 所有子目录，找到 manifest.yaml 就加载。"""
     skills: dict[str, Skill] = {}
-
-    if _SIMPLE_SKILLS_DIR.exists():
-        for path in _SIMPLE_SKILLS_DIR.glob("*.yaml"):
-            skill = _load_simple_skill(path)
+    skills_root = Path(SKILLS_DIR)
+    if not skills_root.exists():
+        log.warning(f"SKILLS_DIR 不存在: {skills_root}")
+        return skills
+    for skill_dir in sorted(skills_root.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        try:
+            skill = _load_skill_dir(skill_dir)
+        except Exception as e:
+            log.warning(f"skill {skill_dir.name} 加载失败: {e}")
+            continue
+        if skill is not None:
             skills[skill.name] = skill
-
-    if _MANIFESTS_DIR.exists():
-        for path in _MANIFESTS_DIR.glob("*.yaml"):
-            skill = _load_manifest_skill(path)
-            skills[skill.name] = skill
-
+            log.info(f"[REGISTRY] loaded skill={skill.name} from {skill_dir}")
     return skills
 
 
@@ -66,6 +84,15 @@ def get_registry() -> dict[str, Skill]:
     return _registry
 
 
+def reload_registry() -> dict[str, Skill]:
+    """强制重新扫描 + 重建 registry（给文件 watcher hot-reload 用）。"""
+    global _registry
+    _registry = load_skills()
+    log.info(f"[REGISTRY] reloaded, {len(_registry)} skills: {list(_registry.keys())}")
+    return _registry
+
+
 def reset_registry() -> None:
+    """测试用：清空 registry 让下次 get_registry() 重新加载。"""
     global _registry
     _registry = {}

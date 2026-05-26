@@ -18,7 +18,6 @@ from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend
 from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
 
-_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
 
 # Per-user 串行化锁：同 user 的消息不并发处理，避免 submit 阻塞期间新消息进 LLM 瞎回
@@ -134,17 +133,14 @@ async def _reply_with_result(message_id: str, result) -> None:
 def _load_lazy_resource(skill: Skill, action_name: str) -> str:
     """根据 skill.lazy_resources 配置加载资源文件内容。
 
-    skill.lazy_resources = {
-        'lookup_characters': 'xd-poster-gen-skill/references/characters.tsv',
-        'lookup_options': 'xd-poster-gen-skill/references/options.md',
-    }
+    registry 已经把路径解析成绝对路径（manifest 同目录起算）。
     """
-    rel_path = skill.lazy_resources.get(action_name)
-    if not rel_path:
+    abs_path_str = skill.lazy_resources.get(action_name)
+    if not abs_path_str:
         return f"（{action_name} 没有配置 lazy_resources）"
-    abs_path = _SKILLS_DIR / rel_path
+    abs_path = Path(abs_path_str)
     if not abs_path.exists():
-        return f"（资源文件不存在: {rel_path}）"
+        return f"（资源文件不存在: {abs_path_str}）"
     return abs_path.read_text(encoding="utf-8")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -464,6 +460,12 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
 def main() -> None:
     get_registry()
+    # 启动 skill 文件 watcher，同事 push skill + cron 拉到本地后自动 hot-reload，不重启 bot
+    try:
+        from src.skill.watcher import start_skills_watcher
+        start_skills_watcher()
+    except Exception:
+        log.exception("[WATCHER] failed to start, continuing without hot-reload")
     handler = build_event_handler(on_message)
     ws = lark.ws.Client(
         FEISHU_APP_ID,

@@ -10,3 +10,8 @@ htmlcov/
 .coverage
 dump.rdb
 *.rdb
+
+# Skills 由独立仓库 XD-AIGC-skills 维护
+# dev: git clone https://github.com/XD-AIGC/XD-AIGC-skills.git skills
+# 或 export SKILLS_DIR=/path/to/XD-AIGC-skills/skills 指向别处
+/skills/

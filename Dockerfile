@@ -26,9 +26,8 @@ COPY src ./src
 # 不升 pip — pip 26+ strict resolver 在某些环境与 pydantic-core 死锁
 RUN pip install .
 
-# 业务辅助资源（.dockerignore 已剔除 .env / bot.log / __pycache__ / skills/*/assets/）
+# 业务辅助资源（skills/ 不进镜像 — 由独立仓库 XD-AIGC-skills 维护，runtime 通过 -v mount）
 COPY scripts ./scripts
-COPY skills ./skills
 
 # 运行期身份切到 toolbox-bot
 RUN chown -R toolbox-bot:toolbox-bot /app
