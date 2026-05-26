@@ -20,12 +20,12 @@ RUN groupadd --gid 1100 toolbox-bot \
 
 WORKDIR /app
 
-# 先复制依赖文件单独装，layer 缓存友好
+# 必须 src/ + pyproject.toml 一起在场才能 pip install .（setuptools 包发现）
 COPY pyproject.toml ./
+COPY src ./src
 RUN pip install --upgrade pip && pip install .
 
-# 复制业务代码（.dockerignore 已剔除 .env / bot.log / __pycache__ 等）
-COPY src ./src
+# 业务辅助资源（.dockerignore 已剔除 .env / bot.log / __pycache__ / skills/*/assets/）
 COPY scripts ./scripts
 COPY skills ./skills
 
