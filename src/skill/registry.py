@@ -57,19 +57,21 @@ def _load_skill_dir(skill_dir: Path) -> Skill | None:
 
 
 def load_skills() -> dict[str, Skill]:
-    """扫 SKILLS_DIR 所有子目录，找到 manifest.yaml 就加载。"""
+    """递归扫 SKILLS_DIR 所有 manifest.yaml（支持 <project>/<skill>/manifest.yaml 多级结构）。"""
     skills: dict[str, Skill] = {}
     skills_root = Path(SKILLS_DIR)
     if not skills_root.exists():
         log.warning(f"SKILLS_DIR 不存在: {skills_root}")
         return skills
-    for skill_dir in sorted(skills_root.iterdir()):
-        if not skill_dir.is_dir():
+    for manifest_path in sorted(skills_root.rglob("manifest.yaml")):
+        # 跳过 .git 等隐藏目录
+        if any(part.startswith(".") for part in manifest_path.parts):
             continue
+        skill_dir = manifest_path.parent
         try:
             skill = _load_skill_dir(skill_dir)
         except Exception as e:
-            log.warning(f"skill {skill_dir.name} 加载失败: {e}")
+            log.warning(f"skill {skill_dir} 加载失败: {e}")
             continue
         if skill is not None:
             skills[skill.name] = skill

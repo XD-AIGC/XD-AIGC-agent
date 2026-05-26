@@ -26,7 +26,7 @@ ExecStart=/usr/bin/docker run --rm \
     --network=host \
     --env-file=/etc/xd-aigc-agent/.env \
     --env SKILLS_DIR=/app/skills \
-    -v /AIGC_Group/XD-AIGC-skills/skills:/app/skills:ro \
+    -v /AIGC_Group/XD-AIGC-skills:/app/skills:ro \
     --read-only \
     --tmpfs /tmp \
     --user 1100:1100 \
