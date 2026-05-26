@@ -52,8 +52,12 @@ class _SkillsChangeHandler(FileSystemEventHandler):
 
         threading.Thread(target=_debounced, daemon=True).start()
 
+    _WRITE_EVENTS = {"modified", "created", "deleted", "moved"}
+
     def on_any_event(self, event):
         if event.is_directory:
+            return
+        if event.event_type not in self._WRITE_EVENTS:
             return
         if not self._should_handle(event.src_path):
             return
