@@ -23,7 +23,7 @@ Phase 3：v0.1 端到端跑通（frame-bg-remover 真后端） ✅
 - [x] **A5 实战修复**：submit 保留 session + initial_intent 防失忆 + hallucination 防御 + reply 长度保护
 - [x] **A6**：完整 Memory（cachedStep1FileId 持久化复用 step1）— `Step1Cache` Redis 24h TTL，每 user 独立，命中省 30-60s
 - [x] **A7-docs**：`docs/SKILL-SPEC.md` 给同事的 skill 接入契约
-- [ ] **A7-e2e**：E2E 测试套（mock 飞书+LLM+toolbox）—— 推迟到 Phase 5 部署前
+- [x] **A7-e2e**：`tests/test_e2e.py` 6 个场景 mock 飞书+LLM+toolbox（happy path / retry / enum 兜底 / LLM 失败 / submit 失败 / 串行化）
 
 **Commit 历史**：`5efe66b → 0e49b2b → 1abb093 → 1eb5cdd → 7c2760c → f8a05e0 → 80a6720 → 61b2519 → 62dcf28 → 745a592 → df943fa`（共 11 个，2026-05-26 收工版）
 
@@ -40,29 +40,53 @@ A5 实战测试发现并修复：
 
 **A5 残留**：用户"放权"时 LLM 仍跳过 enum 字段直接 submit —— 见 [issue #1](https://github.com/XD-AIGC/XD-AIGC-agent/issues/1)（待同事改 SKILL.md "自由发挥"语义）
 
-## 🚀 Phase 5 — 生产部署（本地产物 done，等执行）
+## 🚀 Phase 5 — 生产部署（基本完成，2026-05-26 上午）
 
-本地产物已完备：
+本地产物：
 - [x] **Dockerfile** + `.dockerignore` — python:3.11-slim，user uid 1100，HEALTHCHECK 内置
-- [x] **deploy/xd-aigc-agent.service** — systemd unit，docker run host network + read-only
-- [x] **scripts/healthcheck.py** — Redis/LLM/toolbox 三路 ping，退出码 0/1
-- [x] **.env.example.prod** — 生产配置模板（无真值）
-- [x] **docs/DEPLOY.md** — 部署手册（前置/构建/.env/healthcheck/systemd/升级/排查/安全清单）
+- [x] **deploy/xd-aigc-agent.service** — systemd unit
+- [x] **scripts/healthcheck.py** — Redis/LLM/toolbox 三路 ping
+- [x] **.env.example.prod** — 生产配置模板
+- [x] **docs/DEPLOY.md** — 部署手册
 
-下一步（需要 SSH 到 L20_1，本地做不了）：
-- [ ] 创建 toolbox-bot 服务账号（uid 1100）
-- [ ] LLM proxy 维护者给 bot 单发 service token
-- [ ] 部署 `.env` 到 `/etc/xd-aigc-agent/.env`
-- [ ] 跑 healthcheck + 装 systemd + 启动
-- [ ] 飞书后台扩可用范围（5-10 人试点）
-- [ ] 试点 2-3 天收集反馈
+L20_1 真部署：
+- [x] 起 `xd-aigc-agent-redis` 容器（host network，独立 redis）
+- [x] 创建 toolbox-bot 服务账号（uid 1100）
+- [x] 部署 `.env` 到 `/etc/xd-aigc-agent/.env`（600 root）
+- [x] git clone 代码到 `/AIGC_Group/XD-AIGC-agent/`（git pull 工作流）
+- [x] 装 systemd + healthcheck 通过 + bot active healthy
+- [x] 飞书后台扩可用范围（Johnny 操作）
+- [x] D-1~D-6 改动已上线（chat history + friendly error + log param_name）
+
+延后/待办：
+- [ ] LLM proxy 维护者给 bot 单发 service token（暂用 Johnny key，user 同意）
+- [ ] 试点同事使用 2-3 天，收集反馈
 
 ## ⏳ Phase 6 — 扩展（按需）
 
-- [ ] A6 完整版：从 poll 结果提 `intermediateImages.characterActionFileId` 存 Redis，下次同角色同动作自动复用 cachedStep1FileId（省 30-60s）
+- [x] ~~A6 完整版~~（已在 Phase 4 完成，见 A6）
+- [x] ~~`docs/SKILL-SPEC.md`~~（已在 A7-docs 完成）
+- [ ] **issue #1 同事改 SKILL.md** schema 表 + "自由发挥"语义重定义 → 验证完整 enum 兜底 / LLM 纠错行为
+- [ ] **群聊 D-6 chat history 真实验证**（用户测「列方案 ABC → 我选 C」是否能识别）
 - [ ] ArtDAM 集成：OBO token exchange 端点（设计已在 vault `bot-obo-via-shared-sso`）
-- [ ] `docs/SKILL-SPEC.md`：给同事的 skill 接口契约文档
 - [ ] 更多 skill 接入（看同事产 SKILL.md 的进度）
+
+## ✅ 2026-05-26 上午完整工作清单
+
+D 系列（D-1~D-6）+ C（A7-e2e）+ Phase 5 真部署 + git workflow。**7 个 commit，64 → 79 测试**。
+
+| # | 项 | commit | 状态 |
+|---|---|---|---|
+| D-1 | log 加 param_name | 859ffbc | ✅ |
+| D-2 | LLM 调用错误兜底 | 859ffbc | ✅ |
+| D-3 | toolbox 错误友好提示 + submit 失败保留 session | 2e05edf | ✅ |
+| D-4 | 未注册角色 prompt 强化（good/bad case）| 2e05edf | ✅ |
+| D-5 | 群聊 @bot 体验测试 | （飞书测试）| ✅ 无群聊特有 bug |
+| D-6 | LLM chat history（多轮上下文）| e5e8022 | ✅ |
+| C | A7-e2e 测试套（6 场景）| 2e05edf | ✅ |
+| Phase 5 真部署 | git workflow + docker + systemd | f6eed3d, 77c7343 | ✅ healthy |
+
+**累计 commit**：`859ffbc` `77c7343` `f6eed3d` `2e05edf` `f58b5ea` `e5e8022` + Phase 5 部署的
 
 ## 新 Session 启动 Checklist
 
