@@ -130,17 +130,23 @@ async def _reply_with_result(message_id: str, result) -> None:
         await reply_text(_client, message_id, result.text or "完成")
 
 
+class LazyResourceError(Exception):
+    """lazy_resource 配置或文件缺失。区分于"数据加载成功但内容为空"。"""
+
+
 def _load_lazy_resource(skill: Skill, action_name: str) -> str:
     """根据 skill.lazy_resources 配置加载资源文件内容。
 
     registry 已经把路径解析成绝对路径（manifest 同目录起算）。
+    资源未配置或文件不存在时抛 LazyResourceError，不要返回错误字符串当数据用——
+    LLM 把错误字符串当"已加载"会无法判断而陷入重复 lookup 死循环。
     """
     abs_path_str = skill.lazy_resources.get(action_name)
     if not abs_path_str:
-        return f"（{action_name} 没有配置 lazy_resources）"
+        raise LazyResourceError(f"{action_name} 未在 manifest.yaml 配置 lazy_resources")
     abs_path = Path(abs_path_str)
     if not abs_path.exists():
-        return f"（资源文件不存在: {abs_path_str}）"
+        raise LazyResourceError(f"资源文件不存在: {abs_path_str}")
     return abs_path.read_text(encoding="utf-8")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -353,7 +359,17 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 if skill is None:
                     await reply_text(_client, message_id, "内部错误：skill 丢失")
                     return
-                resource = _load_lazy_resource(skill, action.action)
+                try:
+                    resource = _load_lazy_resource(skill, action.action)
+                except LazyResourceError as e:
+                    # 资源配置缺失立即报错，不让 LLM 不停 retry
+                    log.error(f"[LAZY] skill={skill.name} {action.action} 失败: {e}")
+                    await reply_text(
+                        _client, message_id,
+                        f"⚠️ 技能 `{skill.name}` 缺少 {action.action} 数据（{e}），请联系 skill 维护者补全 manifest 和 references。",
+                    )
+                    await _store.clear(user_id)
+                    return
                 session.loaded_resources[action.action] = resource
             # lookup 后把 current_text 换成"继续"信号。
             # 原因：若保持原始"[系统注入：用户刚选择了 skill...]"，LLM 每轮都判断为
