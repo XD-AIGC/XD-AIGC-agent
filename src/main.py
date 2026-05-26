@@ -283,18 +283,27 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     while True:
         iter_count += 1
         log.info(f"[LOOP iter={iter_count} mode={session.mode} skill={session.skill_name} text={current_text[:60]!r}]")
-        if session.mode == "router":
-            action = await router_decide(current_text, session)
-        else:
-            skill = get_registry().get(session.skill_name)
-            if skill is None:
-                log.error(f"skill {session.skill_name} 不存在，回 router")
-                session.mode = "router"
-                session.skill_name = None
-                await _store.save(user_id, session)
-                continue
-            action = await skill_decide(current_text, session, skill)
-        log.info(f"[ACT mode={session.mode}] {action.action} skill={action.skill_name} updated={action.updated_params}")
+        try:
+            if session.mode == "router":
+                action = await router_decide(current_text, session)
+            else:
+                skill = get_registry().get(session.skill_name)
+                if skill is None:
+                    log.error(f"skill {session.skill_name} 不存在，回 router")
+                    session.mode = "router"
+                    session.skill_name = None
+                    await _store.save(user_id, session)
+                    continue
+                action = await skill_decide(current_text, session, skill)
+        except Exception as e:
+            log.exception("LLM call failed")
+            await reply_text(_client, message_id, f"⚠️ AI 暂时不可用（{type(e).__name__}），稍后再试一次。")
+            # session 保留，用户可以直接重发
+            return
+        log.info(
+            f"[ACT mode={session.mode}] {action.action} skill={action.skill_name} "
+            f"param_name={action.param_name} updated={action.updated_params}"
+        )
 
         # 应用 LLM 声明的 updated_params
         if action.updated_params:
