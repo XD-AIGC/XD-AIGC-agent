@@ -23,7 +23,8 @@ WORKDIR /app
 # 必须 src/ + pyproject.toml 一起在场才能 pip install .（setuptools 包发现）
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --upgrade pip && pip install .
+# 不升 pip — pip 26+ strict resolver 在某些环境与 pydantic-core 死锁
+RUN pip install .
 
 # 业务辅助资源（.dockerignore 已剔除 .env / bot.log / __pycache__ / skills/*/assets/）
 COPY scripts ./scripts
