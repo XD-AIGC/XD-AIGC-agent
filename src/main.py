@@ -212,7 +212,7 @@ async def _execute_image_skill(skill_name: str, image_key: str, message_id: str,
         await _reply_with_result(message_id, result)
     except Exception as e:
         log.exception("image skill execution failed")
-        await reply_text(_client, message_id, f"处理失败：{e}")
+        await reply_text(_client, message_id, _friendly_skill_error(e))
     finally:
         await _store.clear(user_id)
 
@@ -279,7 +279,7 @@ async def _process_locked(message_id: str, msg_type: str, content: dict, user_id
 
     # 纯文字路径：Agentic Loop（支持 lazy lookup 自动 continue）
     if not text:
-        await reply_text(_client, message_id, "请告诉我你想做什么，比如「帮我去白底」。")
+        await reply_text(_client, message_id, _out_of_scope_msg())
         return
 
     await _agentic_loop(text, session, user_id, message_id)
