@@ -154,7 +154,16 @@ _store = SessionStore()
 _step1_cache = Step1Cache()
 _client = build_client()
 
-_OUT_OF_SCOPE = "我只能帮你：去除图片背景（抠图）。请告诉我你想做什么。"
+def _out_of_scope_msg() -> str:
+    """动态列出当前所有可用 skill，不要硬编码（避免新接 skill 时忘改）。"""
+    skills = get_registry().values()
+    if not skills:
+        return "我目前还没有可用的工具。"
+    lines = ["我目前可以帮你做这些事："]
+    for s in skills:
+        lines.append(f"- {s.description}")
+    lines.append("\n请告诉我你想做哪个？")
+    return "\n".join(lines)
 
 # 飞书群里 @mention 在 content.text 里渲染为 "@_user_N" 占位符
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+\s*")
@@ -362,7 +371,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
         # 终态 action：处理后退出循环
         if action.action == "out_of_scope":
-            await reply_text(_client, message_id, _OUT_OF_SCOPE)
+            await reply_text(_client, message_id, _out_of_scope_msg())
             await _store.clear(user_id)
             return
 
