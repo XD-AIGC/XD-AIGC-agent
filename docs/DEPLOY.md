@@ -27,30 +27,32 @@ sudo chmod 750 /etc/xd-aigc-agent
 
 ## 2. 构建 + 部署（每次发版）
 
-### 2.1 本地（开发机）构建镜像并推到服务器
+### 2.0 前置：Redis 容器（首次部署）
 
-方案 A：直接在服务器上构建（小项目推荐）
 ```bash
-# 在开发机：把源码 rsync 到服务器
-rsync -av --exclude='.git' --exclude='.env' --exclude='bot.log' \
-    /mnt/d/GIT/XD-AIGC-agent/ ubuntu@10.102.80.15:/AIGC_Group/XD-AIGC-agent/
+# 起一个专用 Redis container，host network 让 agent 直连 localhost:6379
+sudo docker run -d --name xd-aigc-agent-redis \
+    --restart=always --network=host \
+    redis:7-alpine redis-server --bind 127.0.0.1 \
+    --maxmemory 256mb --maxmemory-policy allkeys-lru
 
-# ssh 到服务器
-ssh ubuntu@10.102.80.15
-cd /AIGC_Group/XD-AIGC-agent
-sudo docker build -t xd-aigc-agent:latest .
-sudo docker images xd-aigc-agent  # 验证
+# 验证
+sudo docker exec xd-aigc-agent-redis redis-cli ping  # 应返回 PONG
 ```
 
-方案 B：本地 build → tar → scp（若服务器构建环境太干净没缓存）
+### 2.1 首次部署：git clone 代码
+
 ```bash
-# 本地
-docker build -t xd-aigc-agent:latest .
-docker save xd-aigc-agent:latest | gzip > /tmp/xd-aigc-agent.tar.gz
-scp /tmp/xd-aigc-agent.tar.gz ubuntu@10.102.80.15:/tmp/
+# 本地：把代码 push 到 GitHub
+git push origin main
 
 # 服务器
-ssh ubuntu@10.102.80.15 'sudo docker load < /tmp/xd-aigc-agent.tar.gz'
+ssh ubuntu@10.102.80.15
+cd /AIGC_Group
+git clone https://github.com/XD-AIGC/XD-AIGC-agent.git
+cd XD-AIGC-agent
+sudo docker build -t xd-aigc-agent:latest .  # 首次约 2-5 分钟
+sudo docker images xd-aigc-agent  # 验证
 ```
 
 ### 2.2 配置 `.env`
@@ -100,16 +102,29 @@ sudo journalctl -u xd-aigc-agent --since '10 min ago' | grep -E "ERROR|MSG|ACT"
 
 ## 4. 升级流程（已部署后）
 
+标准 git workflow：
+
 ```bash
-# 1. rsync 新代码到 /AIGC_Group/XD-AIGC-agent/
-# 2. 在服务器
+# 本地（开发机）
+git push origin main
+
+# 服务器
+ssh ubuntu@10.102.80.15
 cd /AIGC_Group/XD-AIGC-agent
+git pull origin main
 sudo docker build -t xd-aigc-agent:latest .
-sudo systemctl restart xd-aigc-agent  # 滚动重启，~10s 完成
-sudo journalctl -u xd-aigc-agent -f   # 验证启动成功
+sudo systemctl restart xd-aigc-agent
+sudo journalctl -u xd-aigc-agent -f --since '30 sec ago'  # 验证启动
 ```
 
-回滚：`sudo docker tag xd-aigc-agent:<old-sha> xd-aigc-agent:latest && systemctl restart xd-aigc-agent`
+**回滚**（恢复到上一个 commit）：
+```bash
+cd /AIGC_Group/XD-AIGC-agent
+git log --oneline -10  # 找到要回退的 commit hash
+git checkout <commit-hash>
+sudo docker build -t xd-aigc-agent:latest .
+sudo systemctl restart xd-aigc-agent
+```
 
 ## 5. 故障排查
 
