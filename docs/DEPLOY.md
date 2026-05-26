@@ -40,20 +40,38 @@ sudo docker run -d --name xd-aigc-agent-redis \
 sudo docker exec xd-aigc-agent-redis redis-cli ping  # 应返回 PONG
 ```
 
-### 2.1 首次部署：git clone 代码
+### 2.1 首次部署：git clone agent + skills 两个仓库
 
 ```bash
-# 本地：把代码 push 到 GitHub
+# 本地：把 agent 代码 push 到 GitHub
 git push origin main
 
 # 服务器
 ssh ubuntu@10.102.80.15
 cd /AIGC_Group
+
+# clone 两个仓库
 git clone https://github.com/XD-AIGC/XD-AIGC-agent.git
+git clone https://github.com/XD-AIGC/XD-AIGC-skills.git   # PRIVATE，需要 .git-credentials 配 PAT
+
+# build agent 镜像
 cd XD-AIGC-agent
 sudo docker build -t xd-aigc-agent:latest .  # 首次约 2-5 分钟
 sudo docker images xd-aigc-agent  # 验证
 ```
+
+### 2.1b 装 cron 自动拉 skills（每 5 分钟）
+
+```bash
+sudo cp /AIGC_Group/XD-AIGC-agent/deploy/cron-pull-skills.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/cron-pull-skills.sh
+echo '*/5 * * * * ubuntu /usr/local/bin/cron-pull-skills.sh >> /var/log/xd-aigc-skills-pull.log 2>&1' \
+    | sudo tee /etc/cron.d/xd-aigc-skills-pull
+sudo touch /var/log/xd-aigc-skills-pull.log
+sudo chown ubuntu /var/log/xd-aigc-skills-pull.log
+```
+
+配置后：同事 push skill → 5min 内 cron 拉到服务器 → agent watcher 检测变化 → 自动 reload registry（对话不中断）。
 
 ### 2.2 配置 `.env`
 ```bash
@@ -102,7 +120,7 @@ sudo journalctl -u xd-aigc-agent --since '10 min ago' | grep -E "ERROR|MSG|ACT"
 
 ## 4. 升级流程（已部署后）
 
-标准 git workflow：
+### 4.1 升级 agent 代码（harness 改动）
 
 ```bash
 # 本地（开发机）
@@ -115,6 +133,21 @@ git pull origin main
 sudo docker build -t xd-aigc-agent:latest .
 sudo systemctl restart xd-aigc-agent
 sudo journalctl -u xd-aigc-agent -f --since '30 sec ago'  # 验证启动
+```
+
+### 4.2 升级 skill（同事侧改 SKILL.md / manifest）
+
+**完全自动，不需要你做任何事**：
+1. 同事 push 到 XD-AIGC-skills
+2. 服务器 cron 5 分钟内 git pull
+3. agent watcher 检测变化 → reload registry
+4. 对话不中断、不重启 bot、不重 build docker
+
+如果你想手动加速：
+```bash
+ssh ubuntu@10.102.80.15
+sudo /usr/local/bin/cron-pull-skills.sh   # 立即手动跑一次
+# watcher 2s 内自动 reload
 ```
 
 **回滚**（恢复到上一个 commit）：

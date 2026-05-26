@@ -90,6 +90,12 @@ contact.  docx.  drive.  bitable.  calendar.  mail.  wiki.
 | `docs/SKILL-SPEC.md` | 给同事的 skill 接入契约：manifest / SkillParam / Backend / enum 兜底 / SKILL.md 写作规范 |
 | `docs/DEPLOY.md` | L20_1 生产部署手册：Dockerfile / systemd / .env.prod / 健康检查 / 升级回滚 / 故障排查 |
 
+### 关联仓库
+
+| 仓库 | 作用 |
+|------|------|
+| **[XD-AIGC-skills](https://github.com/XD-AIGC/XD-AIGC-skills)** (PRIVATE) | 同事维护的 skill 库；agent 通过 SKILLS_DIR 加载，cron 5min 自动 pull，watcher hot-reload 不重启 bot |
+
 ### Vault（推理过程 / 决策依据 / 对话历史）
 
 | 路径 | 何时读 |

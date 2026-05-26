@@ -66,10 +66,11 @@ L20_1 真部署：
 
 - [x] ~~A6 完整版~~（已在 Phase 4 完成，见 A6）
 - [x] ~~`docs/SKILL-SPEC.md`~~（已在 A7-docs 完成）
+- [x] **Skill repo 分离** — XD-AIGC-skills 独立仓库 + 递归 registry + watcher hot-reload + cron 5min pull
 - [ ] **issue #1 同事改 SKILL.md** schema 表 + "自由发挥"语义重定义 → 验证完整 enum 兜底 / LLM 纠错行为
 - [ ] **群聊 D-6 chat history 真实验证**（用户测「列方案 ABC → 我选 C」是否能识别）
 - [ ] ArtDAM 集成：OBO token exchange 端点（设计已在 vault `bot-obo-via-shared-sso`）
-- [ ] 更多 skill 接入（看同事产 SKILL.md 的进度）
+- [ ] 更多 skill 接入（自动生效，无需 Johnny 操作）
 
 ## ✅ 2026-05-26 上午完整工作清单
 
