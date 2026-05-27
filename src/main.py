@@ -40,7 +40,7 @@ _RETRY_PHRASES = {
     "重新生成", "重做", "again",
 }
 
-_COMPLETED_CHITCHAT_PHRASES = {
+_SKILL_CHITCHAT_PHRASES = {
     "你好", "您好", "hi", "hello", "哈喽", "嗨", "在吗",
     "好", "好的", "嗯", "嗯嗯", "ok", "收到",
     "谢谢", "感谢", "辛苦了", "这张不错", "不错",
@@ -56,8 +56,8 @@ def _is_retry(text: str) -> bool:
     return _matches_phrase(text, _RETRY_PHRASES)
 
 
-def _is_completed_chitchat(text: str) -> bool:
-    return _matches_phrase(text, _COMPLETED_CHITCHAT_PHRASES)
+def _is_skill_chitchat(text: str) -> bool:
+    return _matches_phrase(text, _SKILL_CHITCHAT_PHRASES)
 
 
 _HISTORY_MAX_TURNS = 10  # 最近 10 条（5 轮 user+assistant）
@@ -377,13 +377,14 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 await reply_text(_client, message_id, _friendly_skill_error(e))
             return
 
-    # 完成态下的问候/含糊短句不要交给 Skill LLM，避免误判为继续 submit。
+    # Skill mode 下的问候/含糊短句不要交给 Skill LLM，避免误判为继续 submit。
     if (
-        session.completed
-        and session.mode == "skill"
-        and _is_completed_chitchat(text)
+        session.mode == "skill"
+        and _is_skill_chitchat(text)
     ):
-        msg = "我还在上一个任务里。要再做一张相同的、调整哪里，还是换别的需求？"
+        msg = "我还在当前任务里。要继续、调整参数，还是换别的需求？"
+        if session.completed:
+            msg = "我还在上一个任务里。要再做一张相同的、调整哪里，还是换别的需求？"
         _append_history(session, "user", text)
         _append_history(session, "assistant", msg)
         await reply_text(_client, message_id, msg)
