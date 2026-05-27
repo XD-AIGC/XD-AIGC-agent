@@ -96,6 +96,15 @@ def test_resolver_allows_multi_select_when_enabled():
     assert result.values == ["2:3", "3:2"]
 
 
+def test_resolver_rejects_multi_select_when_one_index_is_out_of_range():
+    option_set = _ratio_options()
+    option_set.allow_multi = True
+
+    result = OptionResolver(now=lambda: 120.0, skill_version="v1").resolve("1 99", option_set)
+
+    assert result.status == "out_of_range"
+
+
 def test_build_enum_option_set():
     option_set = build_enum_option_set("ratio", ["2:3", "3:2"], skill_version="v1", now=100.0)
 
