@@ -37,3 +37,23 @@ def test_classifier_detects_running_job_controls():
 
     assert classifier.classify("继续等", phase=ConversationPhase.running_job).intent == TurnIntent.continue_wait
     assert classifier.classify("还在吗", phase=ConversationPhase.running_job).intent == TurnIntent.ask_status
+
+
+def test_classifier_does_not_match_status_phrase_as_substring():
+    result = TurnClassifier().classify("这张做得好了没意思", phase=ConversationPhase.running_job)
+
+    assert result.intent == TurnIntent.unrelated
+
+
+def test_classifier_allows_status_phrase_with_prefix():
+    result = TurnClassifier().classify("现在好了没", phase=ConversationPhase.running_job)
+
+    assert result.intent == TurnIntent.ask_status
+
+
+def test_classifier_treats_cancel_with_sentence_particle_as_cancel():
+    classifier = TurnClassifier()
+
+    assert classifier.classify("停止吧", phase=ConversationPhase.collecting).intent == TurnIntent.cancel
+    assert classifier.classify("取消啊", phase=ConversationPhase.collecting).intent == TurnIntent.cancel
+    assert classifier.classify("算了吧", phase=ConversationPhase.collecting).intent == TurnIntent.cancel

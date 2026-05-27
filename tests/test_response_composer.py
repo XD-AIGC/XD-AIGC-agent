@@ -30,6 +30,14 @@ def test_boundary_message_is_tool_scoped():
     assert "要继续这个任务" in message
 
 
+def test_boundary_message_includes_capability_list_when_available():
+    message = ResponseComposer(lambda: [_skill("poster", "生成海报")]).completed_boundary()
+
+    assert "AIGC 工具任务" in message
+    assert "我目前可以帮你做这些事" in message
+    assert "生成海报" in message
+
+
 def test_skill_chitchat_differs_for_active_and_completed_sessions():
     composer = ResponseComposer(lambda: [])
 

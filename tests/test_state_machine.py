@@ -38,3 +38,33 @@ def test_running_job_unrelated_keeps_user_in_running_job():
 
     assert transition.next_phase == ConversationPhase.running_job
     assert transition.side_effects == [SideEffect.reply_running_job]
+
+
+def test_selecting_skill_option_moves_to_collecting():
+    transition = StateMachine().transition(ConversationPhase.selecting_skill, TurnIntent.answer_option)
+
+    assert transition.next_phase == ConversationPhase.collecting
+    assert transition.side_effects == [SideEffect.clear_last_options, SideEffect.invoke_skill_runtime]
+    assert transition.allow_skill_runtime
+
+
+def test_cancelled_start_skill_reenters_selection():
+    transition = StateMachine().transition(ConversationPhase.cancelled, TurnIntent.start_skill)
+
+    assert transition.next_phase == ConversationPhase.selecting_skill
+    assert transition.side_effects == [SideEffect.invoke_skill_runtime]
+    assert transition.allow_skill_runtime
+
+
+def test_failed_retry_resubmits_job():
+    transition = StateMachine().transition(ConversationPhase.failed, TurnIntent.retry)
+
+    assert transition.next_phase == ConversationPhase.running_job
+    assert transition.side_effects == [SideEffect.submit_job]
+
+
+def test_failed_cancel_clears_context():
+    transition = StateMachine().transition(ConversationPhase.failed, TurnIntent.cancel)
+
+    assert transition.next_phase == ConversationPhase.idle
+    assert transition.side_effects == [SideEffect.clear_context]

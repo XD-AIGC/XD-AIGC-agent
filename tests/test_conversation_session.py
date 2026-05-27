@@ -8,6 +8,7 @@ from src.conversation.session import (
     ConversationPhase,
     ConversationSession,
     dump_session,
+    infer_phase_from_legacy_fields,
     load_session,
     sync_legacy_fields,
     to_legacy_user_session,
@@ -46,6 +47,17 @@ def test_load_session_migrates_v1_phase_matrix(legacy, phase):
     assert session.phase == phase
     assert session.mode == ("router" if phase == ConversationPhase.idle else "skill")
     assert session.completed is (phase == ConversationPhase.completed)
+
+
+def test_public_legacy_phase_inference_matches_v1_migration_matrix():
+    assert infer_phase_from_legacy_fields({}) == ConversationPhase.idle
+    assert infer_phase_from_legacy_fields({"state": "collecting"}) == ConversationPhase.collecting
+    assert infer_phase_from_legacy_fields(UserSession(mode="skill", skill_name="xd-poster-gen")) == (
+        ConversationPhase.collecting
+    )
+    assert infer_phase_from_legacy_fields(UserSession(completed=True, state="collecting")) == (
+        ConversationPhase.completed
+    )
 
 
 def test_load_session_preserves_v1_payload_fields():
