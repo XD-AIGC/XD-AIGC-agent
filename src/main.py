@@ -550,6 +550,17 @@ def _job_payload_error_message(exc: InvalidJobPayloadError) -> str:
     return "⚠️ 提交内容包含不能保存到任务状态里的数据。请改用 fileId/public_id，避免 bytes/base64/signed URL。"
 
 
+def _duplicate_submit_message(active_job) -> str:
+    status = getattr(active_job, "status", None)
+    if status in {"submitted", "running", "timeout"}:
+        return "这条请求已经提交过，还在生成中，请稍候。"
+    if status == "completed":
+        return "这条请求已经完成过。要生成新一张，请说「再来一张」。"
+    if status == "failed":
+        return "这条请求上次提交失败了。你可以调整信息后再试一次。"
+    return "这条请求已经提交过，我不会重复生成。"
+
+
 async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill, payload: dict, action_name: str):
     try:
         submission = await _job_controller.begin_submit(
@@ -568,13 +579,14 @@ async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill
         await _store.save(user_id, session)
         return None
     except InvalidJobPayloadError as exc:
+        log.warning("[JOB] payload rejected: %s", exc)
         msg = _job_payload_error_message(exc)
         await reply_text(_client, message_id, msg)
         _append_history(session, "assistant", msg)
         await _store.save(user_id, session)
         return None
     if submission.duplicate:
-        msg = "这条请求已经提交过，我不会重复生成。"
+        msg = _duplicate_submit_message(submission.active_job)
         await reply_text(_client, message_id, msg)
         _append_history(session, "assistant", msg)
         await _store.save(user_id, session)
