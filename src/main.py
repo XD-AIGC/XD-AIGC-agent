@@ -11,8 +11,20 @@ from src.feishu.download import download_image, download_url
 from pathlib import Path
 
 from src.orchestrator.llm import router_decide, skill_decide
+from src.conversation.classifier import (
+    TurnClassifier,
+    TurnIntent,
+    compact_text,
+    is_capability_question,
+    is_completed_skill_continuation,
+    is_retry,
+    is_skill_chitchat,
+)
 from src.conversation.option_resolver import OptionResolver, build_resource_option_set
 from src.conversation.options import OptionSet
+from src.conversation.response import ResponseComposer
+from src.conversation.session import ConversationPhase, infer_phase_from_legacy_fields
+from src.conversation.state_machine import SideEffect, StateMachine
 from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
 from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
@@ -28,6 +40,8 @@ _MAX_SKILL_ACTIONS_PER_TURN = 8  # 防 LLM 在单轮里无限调 skill action
 
 # Per-user 串行化锁：同 user 的消息不并发处理，避免 submit 阻塞期间新消息进 LLM 瞎回
 _user_locks: dict[str, asyncio.Lock] = {}
+_turn_classifier = TurnClassifier()
+_state_machine = StateMachine()
 
 
 def _get_user_lock(user_id: str) -> asyncio.Lock:
@@ -38,75 +52,31 @@ def _get_user_lock(user_id: str) -> asyncio.Lock:
     return lock
 
 
-# 完全匹配触发 retry 快路径（不进 LLM 直接重 submit）
-_RETRY_PHRASES = {
-    "再来一张", "再来一个", "再来", "再生成", "再画一张", "再做一张",
-    "重新生成", "重做", "again",
-}
-
-_SKILL_CHITCHAT_PHRASES = {
-    "你好", "您好", "hi", "hello", "哈喽", "嗨", "在吗",
-    "好", "好的", "嗯", "嗯嗯", "ok", "收到",
-    "谢谢", "感谢", "辛苦了", "这张不错", "不错",
-}
-
 _NUMBERED_REPLY_RE = re.compile(r"^\s*(?:选|选择|第)?\s*(\d{1,2})\s*(?:号|个)?\s*[。.!！?？]?\s*$")
 _NUMBERED_OPTION_RE = re.compile(r"^\s*(\d{1,2})[.．、)]\s*(.+?)\s*$")
 _OPTION_KEY_RE = re.compile(r"[（(]([A-Za-z0-9_-]+)[）)]")
 _RATIO_VALUE_RE = re.compile(r"^\d+\s*:\s*\d+")
 
 
-def _matches_phrase(text: str, phrases: set[str]) -> bool:
-    t = text.strip().rstrip("。.!！?？ ").lower()
-    return t in {p.lower() for p in phrases}
-
-
 def _is_retry(text: str) -> bool:
-    return _matches_phrase(text, _RETRY_PHRASES)
+    return is_retry(text)
 
 
 def _is_skill_chitchat(text: str) -> bool:
-    return _matches_phrase(text, _SKILL_CHITCHAT_PHRASES)
+    return is_skill_chitchat(text)
 
 
 def _compact_text(text: str) -> str:
-    return re.sub(r"[\s，,。.!！?？~～]", "", text).lower().replace("其它", "其他")
+    return compact_text(text)
 
 
 def _is_capability_question(text: str) -> bool:
-    t = _compact_text(text)
-    if not t:
-        return False
-    explicit = (
-        "你能做什么",
-        "能做什么",
-        "可以做什么",
-        "有什么功能",
-        "哪些功能",
-        "支持什么",
-        "能帮我什么",
-        "还能帮我什么",
-    )
-    if any(p in t for p in explicit):
-        return True
-    return ("还能" in t or "还可以" in t) and (
-        "做什么" in t or "什么事" in t or "哪些" in t or "啥" in t
-    )
+    return is_capability_question(text)
 
 
 def _is_completed_skill_continuation(text: str) -> bool:
     """Completed skill sessions only continue on explicit retry or edit intent."""
-    t = _compact_text(text)
-    if not t:
-        return False
-    markers = (
-        "再来", "再生成", "再做", "再画", "重新生成", "重做",
-        "改", "换", "调整", "变成", "设成",
-        "标题", "主标题", "副标题", "文案", "比例", "构图",
-        "角色", "动作", "颜色", "色调", "风格", "尺寸",
-        "横版", "竖版", "方图", "手机",
-    )
-    return any(marker in t for marker in markers)
+    return is_completed_skill_continuation(text)
 
 
 def _last_assistant_message(session) -> str:
@@ -532,28 +502,38 @@ _store = SessionStore()
 _step1_cache = Step1Cache()
 _client = build_client()
 
+
+def _response_composer() -> ResponseComposer:
+    return ResponseComposer(lambda: get_registry().values())
+
+
+def _phase_for_session(session) -> ConversationPhase:
+    return infer_phase_from_legacy_fields(session)
+
+
+def _classify_turn(text: str, session):
+    return _turn_classifier.classify(
+        text,
+        phase=_phase_for_session(session),
+        has_last_options=getattr(session, "last_options", None) is not None,
+    )
+
+
 def _out_of_scope_msg() -> str:
     """动态列出当前所有可用 skill，不要硬编码（避免新接 skill 时忘改）。"""
-    skills = get_registry().values()
-    if not skills:
-        return "我目前还没有可用的工具。"
-    lines = ["我目前可以帮你做这些事："]
-    for s in skills:
-        lines.append(f"- {s.description}")
-    lines.append("\n请告诉我你想做哪个？")
-    return "\n".join(lines)
+    return _response_composer().out_of_scope()
 
 
 def _completion_followup_msg() -> str:
-    return "已完成。要继续这个任务、调整哪里，还是换别的需求？"
+    return _response_composer().completed_followup()
 
 
 def _completed_capability_msg() -> str:
-    return f"{_completion_followup_msg()}\n\n{_out_of_scope_msg()}"
+    return _response_composer().completed_capability()
 
 
 def _completed_boundary_msg() -> str:
-    return f"我主要处理 AIGC 工具任务。\n\n{_completion_followup_msg()}"
+    return _response_composer().completed_boundary()
 
 
 async def _reply_completion_followup(message_id: str, session) -> None:
@@ -685,13 +665,17 @@ async def _process_locked(message_id: str, msg_type: str, content: dict, user_id
 
 async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> None:
     """主决策循环：根据 mode 调 router/skill，自动 handle lookup，遇到终态退出。"""
+    turn = _classify_turn(text, session)
+    phase = _phase_for_session(session)
+    transition = _state_machine.transition(phase, turn.intent)
+
     # Retry 快路径：session 已完成 + 用户说「再来一张」类短语 → 不进 LLM，直接重 submit
     if (
         session.completed
         and session.mode == "skill"
         and session.skill_name
         and session.collected_params
-        and _is_retry(text)
+        and turn.intent == TurnIntent.retry
     ):
         skill = get_registry().get(session.skill_name)
         if skill is not None:
@@ -714,7 +698,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 await reply_text(_client, message_id, _friendly_skill_error(e))
             return
 
-    if session.completed and session.mode == "skill" and _is_capability_question(text):
+    if session.completed and session.mode == "skill" and turn.intent == TurnIntent.ask_capability:
         msg = _completed_capability_msg()
         _append_history(session, "user", text)
         _append_history(session, "assistant", msg)
@@ -725,9 +709,12 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     if (
         session.completed
         and session.mode == "skill"
-        and not _is_completed_skill_continuation(text)
+        and not transition.allow_skill_runtime
     ):
-        msg = _completed_boundary_msg()
+        if SideEffect.reply_chitchat in transition.side_effects:
+            msg = _response_composer().skill_chitchat(completed=True)
+        else:
+            msg = _completed_boundary_msg()
         _append_history(session, "user", text)
         _append_history(session, "assistant", msg)
         await reply_text(_client, message_id, msg)
@@ -737,11 +724,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     # Skill mode 下的问候/含糊短句不要交给 Skill LLM，避免误判为继续 submit。
     if (
         session.mode == "skill"
-        and _is_skill_chitchat(text)
+        and turn.intent == TurnIntent.chitchat
     ):
-        msg = "我还在当前任务里。要继续、调整参数，还是换别的需求？"
-        if session.completed:
-            msg = "我还在上一个任务里。要再做一张相同的、调整哪里，还是换别的需求？"
+        msg = _response_composer().skill_chitchat(completed=session.completed)
         _append_history(session, "user", text)
         _append_history(session, "assistant", msg)
         await reply_text(_client, message_id, msg)
