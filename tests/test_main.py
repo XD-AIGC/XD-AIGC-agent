@@ -780,6 +780,7 @@ async def test_submit_sends_completion_followup(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession
     from src.orchestrator.schema import BotAction
+    from src.skill.job_controller import JobController
     from src.skill.executor import ExecuteResult
     from src.skill.schema import Skill, HttpBackend, SkillOutput
 
@@ -807,6 +808,11 @@ async def test_submit_sends_completion_followup(monkeypatch):
     monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
     monkeypatch.setattr(main_mod, "execute", execute)
     monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+    monkeypatch.setattr(
+        main_mod,
+        "_job_controller",
+        JobController(redis=None, now=lambda: 100.0, job_id_factory=lambda: "job-1"),
+    )
 
     session = UserSession(mode="skill", skill_name="xd-poster-gen")
 
@@ -816,3 +822,64 @@ async def test_submit_sends_completion_followup(monkeypatch):
     assert sent == ["done", "已完成。要继续这个任务、调整哪里，还是换别的需求？"]
     assert store.saved[0] == "user-1"
     assert session.completed is True
+
+
+@pytest.mark.asyncio
+async def test_submit_duplicate_job_does_not_execute(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ActiveJob
+    from src.orchestrator.schema import BotAction, UserSession
+    from src.skill.executor import ExecuteResult
+    from src.skill.job_controller import SubmitJobResult
+    from src.skill.schema import Skill, HttpBackend, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    class DuplicateJobController:
+        async def begin_submit(self, *args, **kwargs):
+            return SubmitJobResult(
+                active_job=ActiveJob(
+                    job_id="job-existing",
+                    skill_name="xd-poster-gen",
+                    action_name="submit",
+                    payload={"topic": "coffee"},
+                    source_message_id="msg-1",
+                    status="running",
+                    started_at=90.0,
+                ),
+                created=False,
+                duplicate=True,
+            )
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"topic": "coffee"}))
+    execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_job_controller", DuplicateJobController())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+
+    await main_mod._agentic_loop("生成海报", session, "user-1", "msg-1")
+
+    execute.assert_not_called()
+    reply_text.assert_called_once()
+    assert "不会重复生成" in reply_text.call_args[0][2]
+    assert store.saved[0] == "user-1"
