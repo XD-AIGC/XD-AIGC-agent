@@ -19,8 +19,12 @@ class SessionStore:
             return UserSession()
         return UserSession.model_validate_json(raw)
 
-    async def save(self, user_id: str, session: UserSession) -> None:
-        await self._redis.setex(self._key(user_id), _TTL, session.model_dump_json())
+    async def save(self, user_id: str, session: UserSession | ConversationSession) -> None:
+        if isinstance(session, ConversationSession):
+            payload = dump_session(session)
+        else:
+            payload = session.model_dump_json()
+        await self._redis.setex(self._key(user_id), _TTL, payload)
 
     async def get_conversation(self, user_id: str) -> ConversationSession:
         raw = await self._redis.get(self._key(user_id))

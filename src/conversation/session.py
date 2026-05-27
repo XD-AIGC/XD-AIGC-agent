@@ -7,7 +7,7 @@ import time
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.orchestrator.schema import UserSession
 
@@ -74,6 +74,11 @@ class ConversationSession(BaseModel):
     state: Literal["idle", "collecting"] = "idle"
     loaded_resources: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("last_processed_message_ids")
+    @classmethod
+    def _trim_processed_message_ids(cls, value: list[str]) -> list[str]:
+        return value[-_MAX_PROCESSED_MESSAGE_IDS:]
+
 
 def load_session(raw: bytes | str | dict[str, Any] | None) -> ConversationSession:
     """Load missing, v1, or v2 session data into ConversationSession v2."""
@@ -90,7 +95,11 @@ def load_session(raw: bytes | str | dict[str, Any] | None) -> ConversationSessio
 
 
 def dump_session(session: ConversationSession | UserSession) -> str:
-    """Serialize a session as v2 JSON after syncing legacy mirror fields."""
+    """Serialize a session as v2 JSON after syncing legacy mirror fields.
+
+    Passing a UserSession performs a one-way v1 upgrade; v2-only fields default
+    to empty values because they do not exist on the legacy view.
+    """
     if isinstance(session, ConversationSession):
         conversation = session
     else:
