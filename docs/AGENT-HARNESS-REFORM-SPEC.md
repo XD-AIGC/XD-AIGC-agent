@@ -2,7 +2,10 @@
 
 > 目标：把当前“Router + Skill prompt + 若干规则补丁”改造成受限 Hermes 风格的对话运行时。
 > 约束：只服务公司内部；只调用白名单 toolbox skill；不扩大飞书权限；不引入 Hermes 的本机文件/命令大权限。
-> 文档规则：本 spec 经 Johnny 明确允许放宽到 500 行以内；超过 500 行再拆分。
+> 文档规则：spec 已拆分为两个文件——
+> - 本文件（架构与静态契约）：≤600 行
+> - `docs/AGENT-HARNESS-REFORM-RUNTIME.md`（运行时：JobController / Background Worker / State Table / 仲裁 / 并发）：≤250 行
+> 拆分依据见 `docs/AGENT-HARNESS-REFORM-OPEN-ITEMS.md` 决策 B。
 
 ## 1. 背景
 
@@ -159,22 +162,32 @@ Feishu Message
 
 ## 7. Session Model
 
-建议新增 `ConversationSession`，旧 `UserSession` 只作为迁移输入。
+新增 `ConversationSession`，旧 `UserSession` 作为迁移输入。**`phase` 是状态唯一源**（删 `mode` 字段——`mode` 可由 `phase` 推导，保留两个会导致状态分叉，违反单一数据源原则）。
 
 ```python
 class ConversationPhase(str, Enum):
-    idle = "idle"
-    selecting_skill = "selecting_skill"
-    collecting = "collecting"
-    awaiting_confirmation = "awaiting_confirmation"
-    running_job = "running_job"
-    completed = "completed"
-    cancelled = "cancelled"
-    failed = "failed"
+    idle = “idle”
+    selecting_skill = “selecting_skill”
+    collecting = “collecting”
+    awaiting_confirmation = “awaiting_confirmation”
+    running_job = “running_job”
+    completed = “completed”
+    cancelled = “cancelled”
+    failed = “failed”
+
+class Message(BaseModel):
+    role: Literal[“user”, “assistant”]
+    content: str
+
+class CompletedResult(BaseModel):
+    submitted_payload: dict       # 最后一次成功 submit 的参数（供”再来一张”复用）
+    artifacts: dict               # fileId / image_key 等结果引用
+    completed_at: float
+    source_message_id: str        # 完成那一轮的 user message_id
 
 class ConversationSession(BaseModel):
     schema_version: int = 2
-    mode: Literal["router", "skill"] = "router"
+    # === 状态唯一源 ===
     phase: ConversationPhase = ConversationPhase.idle
     skill_name: str | None = None
     initial_intent: str | None = None
@@ -185,28 +198,67 @@ class ConversationSession(BaseModel):
     artifacts: dict = Field(default_factory=dict)
     completed_result: CompletedResult | None = None
     chat_history: list[Message] = Field(default_factory=list)
-    turn_count: int = 0
+    # 幂等防御（S26）：已处理过的 user message_id；submit 前查重，防飞书事件重投递 + 用户重复确认
+    last_processed_message_ids: list[str] = Field(default_factory=list)
     updated_at: float
+    # === v1 兼容 mirror 字段（_sync_legacy_fields 自动同步，v2 逻辑禁用）===
+    mode: Literal[“router”, “skill”] = “router”         # derived: phase==idle → router else skill
+    completed: bool = False                              # derived: phase == completed
+    state: Literal[“idle”, “collecting”] = “idle”       # derived: phase ∈ {collecting, awaiting_confirmation}
+    loaded_resources: dict[str, str] = Field(default_factory=dict)
 ```
 
 ### 7.1 字段解释
 
-- `phase`：当前会话状态，替代散落的 `completed/state/pending_param`。
-- `last_options`：最后一次展示给用户的结构化菜单。
-- `active_job`：正在运行或可继续等待的后端任务。
-- `artifacts`：step1FileId、finalImageFileId、uploaded image key 等。
-- `completed_result`：最后一次完成结果，用于“再来一张/换标题”。
-- `chat_history`：只保存对 LLM 有用的短历史，不承担状态职责。
+- `phase`：当前会话状态，**唯一权威**；`mode/completed/state` 都从它派生。
+- `last_options`：最后一次展示给用户的结构化菜单（详见 §9）。
+- `active_job`：正在运行或可继续等待的后端任务（详见 §12）。
+- `artifacts`：step1FileId、finalImageFileId、uploaded image key 等中间产物。
+- `completed_result`：最后一次完成快照，用于”再来一张/换标题”复用。
+- `chat_history`：给 LLM 看的短历史（最近 10 条），不承担状态职责；与 transcript（§16）区分。
+- `last_processed_message_ids`：S26 幂等关键；滚动保留最近 20 条。
 
-### 7.2 旧数据迁移
+### 7.2 双向兼容（v1 ↔ v2 灰度回退）
 
-读取 Redis 时：
+**原则**：v2 schema = v1 superset。v2 写入时强制 mirror v1 兼容字段，v1 读 v2 数据时可降级运作；回退后 `running_job` 状态丢失（按 D2 接受损失）。
 
-- 没有 `schema_version` -> 当作 v1 `UserSession`。
-- `completed=True` -> `phase=completed`。
-- `pending_param` 非空 -> `phase=collecting`。
-- `skill_name` 非空 -> `mode=skill`。
-- `collected_params` 原样迁移。
+#### 7.2.1 v1 → v2 读取（升级）
+
+```python
+def load_session(raw: bytes) -> ConversationSession:
+    data = json.loads(raw)
+    if data.get(“schema_version”, 1) == 1:
+        data[“phase”] = (
+            ConversationPhase.completed if data.get(“completed”)
+            else ConversationPhase.collecting if data.get(“state”) == “collecting”
+            else ConversationPhase.idle
+        )
+        data[“schema_version”] = 2
+    return ConversationSession.model_validate(data)
+```
+
+#### 7.2.2 v2 → v1 写入兼容（`_sync_legacy_fields`）
+
+**强制约束**：每次 `SessionStore.save(session)` 前**必须**调用 `_sync_legacy_fields(session)`，否则切 v2 再回滚 v1，v1 读不到完成态。建议把 save 与 sync 合并为一个不可分调用（实现层防御）。
+
+```python
+def _sync_legacy_fields(s: ConversationSession) -> None:
+    s.mode = “router” if s.phase == ConversationPhase.idle else “skill”
+    s.completed = s.phase == ConversationPhase.completed
+    s.state = “collecting” if s.phase in {
+        ConversationPhase.collecting,
+        ConversationPhase.awaiting_confirmation,
+    } else “idle”
+```
+
+#### 7.2.3 回退场景行为
+
+| v2 phase | v1 看到 | 退化行为 |
+|---|---|---|
+| `collecting` | state=collecting + pending_param | 继续问 param ✅ |
+| `completed` | completed=True + collected_params | retry 快路径可用 ✅ |
+| `running_job` | mode=skill，**active_job 丢失** | v1 不能继续 poll；用户收不到结果。**D2 接受** |
+| `awaiting_confirmation` | state=collecting + pending_param=None | v1 LLM 会重新问参数，体验差但不崩 |
 
 ## 8. Turn Intent
 
@@ -254,7 +306,7 @@ deterministic 必须覆盖：
 | `cancelled` | start_skill, ask_capability, chitchat | router |
 | `failed` | retry, modify_param, cancel, start_skill | recovery |
 
-## 9. OptionSet
+## 9. OptionSet（含 scope S13、过期刷新 D5、skill_version S6）
 
 所有用户可选菜单都用统一结构。
 
@@ -262,38 +314,57 @@ deterministic 必须覆盖：
 class OptionItem(BaseModel):
     index: int
     label: str
-    value: Any
+    value: Any                              # 写入 collected_params 的最终值；value provenance 唯一合法源（S8）
     param_name: str
     aliases: list[str] = Field(default_factory=list)
 
 class OptionSet(BaseModel):
     id: str
-    param_name: str
-    source: Literal["enum", "resource", "skill_runtime"]
+    param_name: str                          # scope=”system” 时可以是 “_system” 之类的保留名
+    scope: Literal[“skill_param”, “system”] = “skill_param”  # S13
+    source: Literal[“enum”, “resource”, “skill_runtime”, “router_disambiguation”]
     items: list[OptionItem]
     page: int = 1
     page_size: int = 8
     allow_multi: bool = False
+    # 防 hot-reload / 长会话陈旧（S6 + D5）
+    skill_version: str | None = None         # skill manifest hash；scope=system 时 None
+    created_at: float
+    ttl_sec: int = 300                       # 默认 5min；过期不删，再用时强制刷新
 ```
 
 ### 9.1 解析规则
 
-- 用户回复数字 -> 匹配当前 page 的 `index`。
-- 用户回复多个数字 -> 仅 `allow_multi=True` 时允许。
-- 用户回复名称 -> 匹配 `label` 或 `aliases`。
-- 用户回复 `更多/more` -> page + 1。
-- 用户回复 `返回/back` -> page - 1。
-- 无匹配 -> 生成“没找到，请选当前列表编号或名称”的回复，不进 LLM。
+- 用户回复数字 → 匹配当前 page 的 `index`。
+- 用户回复多个数字 → 仅 `allow_multi=True` 时允许。
+- 用户回复名称 → 匹配 `label` 或 `aliases`。
+- 用户回复 `更多/more` → page + 1。
+- 用户回复 `返回/back` → page - 1。
+- 无匹配 → 生成”没找到，请选当前列表编号或名称”，不进 LLM。
 
-### 9.2 菜单来源
+### 9.2 过期刷新（D5）
 
-- manifest enum：比例、分辨率、角色类型。
-- lazy resource：角色、动物、场景。
-- skill runtime：LLM 根据 SKILL.md 生成的临时选项，但必须落成 OptionSet 后再展示。
+OptionSet 命中”过期”（`time.time() - created_at > ttl_sec`，或 `skill_version` 与当前 skill 不一致）时：
+- **不删** `last_options`
+- 下次需要解析时：**先重新构造同 `param_name` 的 OptionSet 并展示**，要求用户重新确认选择；不直接按陈旧菜单解析
 
-## 10. SkillRuntimeAction
+示例话术：
+```text
+菜单可能已更新，请确认你的选择：
+1. ...
+2. ...
+```
 
-当前 `BotAction` 过宽，建议收窄。
+### 9.3 菜单来源
+
+- `enum`：manifest 声明的 enum 参数（比例、分辨率、角色类型）
+- `resource`：lazy_resource 拉取结果（角色、动物、场景）
+- `skill_runtime`：LLM 按 SKILL.md 生成的临时选项，必须落成 OptionSet 后再展示
+- `router_disambiguation`（S24）：router 多 skill 命中时的二选一菜单
+
+## 10. SkillRuntimeAction（含 value provenance S8、complete vs exit_skill S9）
+
+当前 `BotAction` 过宽，收窄为：
 
 ```python
 class SkillRuntimeAction(BaseModel):
@@ -303,8 +374,8 @@ class SkillRuntimeAction(BaseModel):
         "call_skill_action",
         "submit_job",
         "reply",
-        "complete",
-        "exit_skill",
+        "complete",       # 任务正常结束；保留 collected_params / completed_result，phase→completed
+        "exit_skill",     # 用户中断或换需求；清 collected_params/artifacts，phase→idle
     ]
     param_name: str | None = None
     message: str | None = None
@@ -315,92 +386,90 @@ class SkillRuntimeAction(BaseModel):
     submit_payload: dict | None = None
 ```
 
-变化：
+### 10.1 action 语义边界
 
-- `ask_param` 拆成 `ask_options` 和 `ask_free_text`。
-- `submit` 改名 `submit_job`，强调先进入 JobController。
-- LLM 不直接控制 poll，poll 是 runtime 职责。
-- LLM 不能输出未声明 action。
+| action | 用途 | session 副作用 |
+|---|---|---|
+| `complete` | 任务**正常**结束 | `phase=completed`；保留 `collected_params/artifacts/completed_result` 供"再来一张/换标题" |
+| `exit_skill` | 用户**中断**或换需求 | `phase=idle`；清 `collected_params/artifacts/pending_param/last_options`，保留 `chat_history` |
 
-## 11. Observation Contract
+### 10.2 updated_params value provenance（S8）
 
-统一 observation：
+**禁止 LLM 自由填写 `updated_params`**。必须按 provenance 校验：
+
+| param 类型 | 合法来源 | 拒绝条件 |
+|---|---|---|
+| `enum` / `resource` / `skill_runtime` 选项 | **只能等于 `last_options.items[].value`** | LLM 自创值（即使字面相似），拒 |
+| 自由文本 | 必须来自当前 user msg 文本，或 LLM 在 `reply` 中明确生成且经用户确认 | LLM 凭空生成、对已有 value 做相似扩写（如 `bill`→`billbill`），拒 |
+| 图片 | 必须来自飞书 `image_key` 或 toolbox `fileId` 引用 | bytes / base64，拒 |
+
+校验失败时：
+- 不写入 `collected_params`
+- 记 warning log
+- 触发 ResponseComposer 用 fallback 模板（"我没听清，请重新说一下 X"）
+
+### 10.3 其他变化
+
+- `ask_param` 拆成 `ask_options` 和 `ask_free_text`
+- `submit` 改名 `submit_job`，强调进入 JobController（含 §12.2 幂等校验）
+- LLM 不直接控制 poll，poll 是 runtime/Background Worker 职责
+- LLM 不能输出未声明 action（pydantic discriminated union 强约束）
+
+## 11. Observation Contract（两层方案，S5）
+
+**两层设计**：envelope 强 typed + `data` 用 `schema_id + payload`。避免一上来为所有 skill action 建巨型 union，未来 skill 扩展不被阻塞。
 
 ```python
+class ObservationData(BaseModel):
+    schema_id: str          # 如 "image.fileId" / "job.polling" / "lookup.characters"
+    payload: dict           # 具体内容；按 schema_id 由 ObservationReducer/SkillRuntime 解读
+
 class Observation(BaseModel):
     status: Literal["success", "warning", "error"]
-    summary: str
-    data: Any = None
+    summary: str            # 一句话给 LLM 读
+    data: ObservationData | None = None
     artifacts: dict = Field(default_factory=dict)
     next_actions: list[str] = Field(default_factory=list)
     stop_condition: str | None = None
 ```
 
-示例：
+### 11.1 schema_id 注册
+
+- **内置 schema_id**（在 spec 实现层维护，固定 discriminated union）：
+  - `image.fileId` — `{fileId: str, width?, height?}`
+  - `image.url` — `{url: str, expires_at?: float}`
+  - `job.polling` — `{job_id: str, eta_sec?: int}`
+  - `lookup.characters` — `{items: list[dict]}`（同 lazy_resource 输出）
+  - `text.plain` — `{text: str}`
+- **未知 skill action**：必须在 manifest 里声明 `actions[].data_schema_id = "<skill_id>.<name>"`，否则 ObservationReducer 拒绝接受 observation。
+
+### 11.2 示例
 
 ```json
 {
   "status": "success",
   "summary": "generate_step1_only completed",
-  "data": {"fileId": "6a..."},
+  "data": {
+    "schema_id": "image.fileId",
+    "payload": {"fileId": "6a..."}
+  },
   "artifacts": {"step1_file_id": "6a...", "sent_to_user": true},
   "next_actions": ["ask_user_confirm", "regenerate_step1", "change_action"],
   "stop_condition": null
 }
 ```
 
-错误 observation 必须包含：
+### 11.3 错误 observation 必含
 
 - root cause hint
 - safe retry instruction
 - explicit stop condition
 
-## 12. JobController
+## 12. JobController（已外置）
 
-`active_job` 用于所有异步任务。
+JobController（含幂等校验 S26、本地取消语义 R2、用户触发恢复 D4、payload 约束 R4）已拆到 `docs/AGENT-HARNESS-REFORM-RUNTIME.md §1`。
 
-```python
-class ActiveJob(BaseModel):
-    job_id: str
-    skill_name: str
-    action_name: str
-    payload: dict
-    status: Literal["submitted", "running", "completed", "failed", "cancelled", "timeout"]
-    started_at: float
-    last_poll_at: float | None = None
-    poll_count: int = 0
-    last_observation: Observation | None = None
-```
-
-### 12.1 状态流
-
-```
-submit_job
-  -> active_job.status=submitted
-  -> poll loop
-  -> completed | failed | timeout | cancelled
-```
-
-### 12.2 用户交互
-
-- 用户说“取消”：停止当前等待，标记 cancelled。
-- 用户说“继续等”：继续 poll existing job，不重新 submit。
-- 用户说“重试”：复用 payload 重新 submit。
-- 用户说“修改”：退出 running/completed，回到 collecting。
-
-### 12.3 timeout 策略
-
-timeout 不直接结束对话，应回复：
-
-```text
-生成还没完成。你可以：
-1. 继续等待
-2. 重试
-3. 修改信息
-4. 取消
-```
-
-此回复也必须写入 OptionSet。
+Background Worker（A1 / S1）见 RUNTIME §2。
 
 ## 13. ResponseComposer
 
@@ -463,24 +532,50 @@ Skill prompt 不再负责状态边界，prompt 应只包含：
 11. Save session。
 12. Append transcript。
 
-## 16. Transcript Eval
+## 16. Transcript Eval（含行为轨迹断言 S27、脱敏 S21）
 
-首批必须覆盖：
+### 16.1 必须覆盖的场景
 
-- 完成后问能力。
-- 完成后问日期。
-- 完成后说谢谢。
-- 完成后“再来一张”。
-- 完成后“换成横版”。
-- 生成中取消。
-- 生成中继续等待。
-- timeout 后继续等。
-- timeout 后修改。
-- 单数字角色选择。
-- 单数字比例选择。
-- 角色名别名选择。
-- `bill` 不变 `billbill`。
-- `3` 不变 `33`。
+- 完成后问能力 / 问日期 / 说谢谢
+- 完成后”再来一张” / “换成横版”
+- 生成中取消（断言文案为 R2 锁定版）
+- 生成中继续等待
+- timeout 后继续等 / 修改
+- 单数字角色选择 / 比例选择 / 角色名别名选择
+- `bill` 不变 `billbill`
+- `3` 不变 `33`
+- **重启恢复（D4）**：bot restart 期间 user 发 “好了没”，恢复 poll + delayed reply
+- **重复 submit 防御（S26）**：飞书事件重投递同 `message_id`，不重复创建 job
+- **OptionSet 过期刷新（D5）**：菜单 TTL 过期后，再次解析时强制重新展示
+
+### 16.2 行为轨迹断言（S27）
+
+每条 transcript 不只断言 `reply_contains`，还必须断言：
+
+| 维度 | 断言 |
+|---|---|
+| LLM 调用 | 是否调 router LLM / skill LLM（次数）|
+| Action 调用 | 是否调 skill action（哪个、几次）|
+| Job | 是否 `submit_job`；`active_job.source_message_id` 是否符合预期 |
+| Phase | session phase 变化序列（如 `idle → collecting → awaiting_confirmation → running_job → completed`）|
+| OptionSet | `last_options` 是否写入；scope / source 是否符合预期 |
+| 幂等 | `last_processed_message_ids` 是否新增对应 ID |
+
+否则测试退化为 `reply_contains`，挡不住”重复 submit”、”重复 lookup”这类问题。
+
+### 16.3 脱敏规则（S21）
+
+transcript fixture 入 git 前必须脱敏：
+
+| 原始 | 替换 |
+|---|---|
+| `open_id` `ou_xxx` | `<USER_1>` / `<USER_2>` 顺序编号 |
+| `message_id` `om_xxx` | `<MSG_1>` / `<MSG_2>` 顺序编号 |
+| `fileId` / toolbox file token | `<FILE_1>` / `<FILE_2>` 顺序编号 |
+| `chat_id` `oc_xxx` | `<CHAT_1>` |
+| 图片二进制 | 删除，只留 `<binary omitted>` |
+
+提供 `tests/fixtures/transcripts/redact.py` 工具脚本；CI lint 检查原始 ID 格式不出现在 fixture 里。
 
 ## 17. 与 Plan 的关系
 
@@ -495,3 +590,13 @@ Skill prompt 不再负责状态边界，prompt 应只包含：
 阶段执行计划见：
 
 - `docs/AGENT-HARNESS-REFORM-PLAN.md`
+
+运行时细节见：
+
+- `docs/AGENT-HARNESS-REFORM-RUNTIME.md`
+
+讨论与决策追踪：
+
+- GitHub issue: https://github.com/XD-AIGC/XD-AIGC-agent/issues/2
+- `docs/AGENT-HARNESS-REFORM-OPEN-ITEMS.md`
+
