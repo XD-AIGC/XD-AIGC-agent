@@ -17,6 +17,7 @@ import pytest
 import src.main as main_mod
 from src.orchestrator.schema import BotAction, UserSession
 from src.skill.executor import ExecuteResult
+from src.skill.schema import PollBackend, Skill, SkillOutput, SkillParam
 
 
 # ---------- 工具：构造干净 session + mock 集 ----------
@@ -50,10 +51,35 @@ def mock_io():
          patch.object(main_mod, "download_url", new=AsyncMock(return_value=b"img_bytes")) as du, \
          patch.object(main_mod, "execute", new=AsyncMock()) as ex, \
          patch.object(main_mod, "router_decide", new=AsyncMock()) as rd, \
-         patch.object(main_mod, "skill_decide", new=AsyncMock()) as sd:
+         patch.object(main_mod, "skill_decide", new=AsyncMock()) as sd, \
+         patch.object(main_mod, "get_registry", new=lambda: _fake_registry()):
         yield {"reply_text": rt, "reply_image": ri, "upload_image": ui,
                "download_url": du, "execute": ex,
                "router_decide": rd, "skill_decide": sd}
+
+
+def _fake_registry() -> dict[str, Skill]:
+    skill = Skill(
+        name="xd-poster-gen",
+        description="poster",
+        api=PollBackend(
+            type="poll",
+            submit_path="/api/generate-v2",
+            poll_path_template="/api/poll-v2/{job_id}",
+        ),
+        params=[
+            SkillParam(
+                name="compositionType",
+                type="enum",
+                required=False,
+                values=["default", "center", "diagonal"],
+                prompt_to_user="排版构图",
+            )
+        ],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="core",
+    )
+    return {"xd-poster-gen": skill}
 
 
 def _text_msg(text: str) -> dict:

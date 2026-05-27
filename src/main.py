@@ -13,7 +13,8 @@ from pathlib import Path
 from src.orchestrator.llm import router_decide, skill_decide
 from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
-from src.skill.executor import execute, SkillExecutionError
+from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
+from src.skill.executor import ExecuteResult, execute, SkillExecutionError
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
@@ -21,6 +22,7 @@ from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
 import time
 
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
+_MAX_SKILL_ACTIONS_PER_TURN = 8  # 防 LLM 在单轮里无限调 skill action
 
 # Per-user 串行化锁：同 user 的消息不并发处理，避免 submit 阻塞期间新消息进 LLM 瞎回
 _user_locks: dict[str, asyncio.Lock] = {}
@@ -46,6 +48,10 @@ _SKILL_CHITCHAT_PHRASES = {
     "谢谢", "感谢", "辛苦了", "这张不错", "不错",
 }
 
+_NUMBERED_REPLY_RE = re.compile(r"^\s*(?:选|选择|第)?\s*(\d{1,2})\s*(?:号|个)?\s*[。.!！?？]?\s*$")
+_NUMBERED_OPTION_RE = re.compile(r"^\s*(\d{1,2})[.．、)]\s*(.+?)\s*$")
+_OPTION_KEY_RE = re.compile(r"[（(]([A-Za-z0-9_-]+)[）)]")
+
 
 def _matches_phrase(text: str, phrases: set[str]) -> bool:
     t = text.strip().rstrip("。.!！?？ ").lower()
@@ -58,6 +64,88 @@ def _is_retry(text: str) -> bool:
 
 def _is_skill_chitchat(text: str) -> bool:
     return _matches_phrase(text, _SKILL_CHITCHAT_PHRASES)
+
+
+def _last_assistant_message(session) -> str:
+    for msg in reversed(session.chat_history):
+        if msg.get("role") == "assistant":
+            return msg.get("content") or ""
+    return ""
+
+
+def _flatten_character_resources(data) -> list[dict]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if not isinstance(data, dict):
+        return []
+    result: list[dict] = []
+    for key in ("characters", "npcCharacters", "animals", "seasonCharacters"):
+        val = data.get(key)
+        if isinstance(val, list):
+            result.extend(item for item in val if isinstance(item, dict))
+    return result
+
+
+def _loaded_character_index(session) -> dict[str, dict]:
+    raw = session.loaded_resources.get("lookup_characters")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    index: dict[str, dict] = {}
+    for item in _flatten_character_resources(data):
+        for field in ("key", "id", "name"):
+            val = item.get(field)
+            if isinstance(val, str) and val:
+                index[val] = item
+    return index
+
+
+def _parse_numbered_options(message: str, resource_index: dict[str, dict]) -> dict[int, dict]:
+    options: dict[int, dict] = {}
+    for line in message.splitlines():
+        match = _NUMBERED_OPTION_RE.match(line)
+        if not match:
+            continue
+        idx = int(match.group(1))
+        body = re.sub(r"[*`]", "", match.group(2)).strip()
+        key_match = _OPTION_KEY_RE.search(body)
+        key = key_match.group(1) if key_match else None
+        name = re.split(r"[（(]|—|-|：|:", body, maxsplit=1)[0].strip()
+        item = resource_index.get(key or "") or resource_index.get(name) or {}
+        resolved_key = item.get("key") or item.get("id") or key or name
+        resolved_name = item.get("name") or name or resolved_key
+        if isinstance(resolved_key, str) and resolved_key:
+            options[idx] = {"key": resolved_key, "name": resolved_name}
+    return options
+
+
+def _resolve_numbered_character_reply(text: str, session) -> tuple[str, str] | None:
+    """Resolve bare numeric replies like "3" against the last character option list."""
+    if session.mode != "skill" or session.completed:
+        return None
+    match = _NUMBERED_REPLY_RE.match(text)
+    if not match:
+        return None
+    resource_index = _loaded_character_index(session)
+    options = _parse_numbered_options(_last_assistant_message(session), resource_index)
+    if not options:
+        return None
+    idx = int(match.group(1))
+    if idx not in options:
+        max_idx = max(options)
+        return "error", f"编号 {idx} 超出范围，我目前列出的是 1-{max_idx}。请回复范围内编号，或回复“更多”查看后续角色。"
+    selected = options[idx]
+    session.collected_params["characters"] = [selected["key"]]
+    prompt = (
+        f"[系统已解析用户编号选择：用户回复编号 {idx}，对应角色 "
+        f"{selected['name']}（key={selected['key']}）。"
+        f"characters 已更新为 [\"{selected['key']}\"]. 请继续收集 actionDesc，"
+        f"如果 actionDesc 已有则继续按 SKILL.md 执行下一步。]"
+    )
+    return "resolved", prompt
 
 
 _HISTORY_MAX_TURNS = 10  # 最近 10 条（5 轮 user+assistant）
@@ -156,6 +244,51 @@ async def _reply_with_result(message_id: str, result) -> None:
         await reply_image(_client, message_id, uploaded_key)
     else:
         await reply_text(_client, message_id, result.text or "完成")
+
+
+async def _send_skill_action_artifact(message_id: str, obs: SkillActionObservation) -> None:
+    """If a skill action returned image bytes, send them immediately as an artifact."""
+    if obs.content_bytes is None:
+        return
+    await _reply_with_result(message_id, ExecuteResult(kind="binary", content_bytes=obs.content_bytes))
+    obs.artifact["sent_to_user"] = True
+
+
+def _extract_image_file_id(data) -> str | None:
+    """Find a toolbox fileId in common image-generation response shapes."""
+    if not isinstance(data, dict):
+        return None
+    file_id = data.get("fileId")
+    if isinstance(file_id, str) and file_id:
+        return file_id
+    images = data.get("images")
+    if isinstance(images, list) and images:
+        first = images[0]
+        if isinstance(first, dict):
+            file_id = first.get("fileId")
+            if isinstance(file_id, str) and file_id:
+                return file_id
+    return None
+
+
+async def _maybe_send_skill_image_by_file_id(skill: Skill, message_id: str, obs: SkillActionObservation) -> None:
+    """Deterministically fetch/send image previews when an action returns only fileId."""
+    if obs.status != "success" or obs.content_bytes is not None or obs.artifact.get("sent_to_user"):
+        return
+    file_id = _extract_image_file_id(obs.data)
+    if not file_id:
+        return
+    try:
+        image_obs = await execute_skill_action(skill, "get_image", {"path_params": {"fileId": file_id}})
+    except SkillActionError:
+        return
+    except Exception:
+        log.exception("failed to fetch skill image by fileId")
+        return
+    await _send_skill_action_artifact(message_id, image_obs)
+    if image_obs.artifact.get("sent_to_user"):
+        obs.artifact["sent_to_user"] = True
+        obs.artifact["image_fileId"] = file_id
 
 
 class LazyResourceError(Exception):
@@ -391,7 +524,19 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         await _store.save(user_id, session)
         return
 
+    numbered_reply = _resolve_numbered_character_reply(text, session)
+    if numbered_reply is not None:
+        status, resolved_text = numbered_reply
+        if status == "error":
+            _append_history(session, "user", text)
+            _append_history(session, "assistant", resolved_text)
+            await reply_text(_client, message_id, resolved_text)
+            await _store.save(user_id, session)
+            return
+        text = resolved_text
+
     lookup_count = 0
+    skill_action_count = 0
     current_text = text
     # 把本轮用户原始输入加进 history（仅一次，loop 内部 lookup continue 时不重复加）
     _append_history(session, "user", text)
@@ -419,11 +564,11 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             return
         log.info(
             f"[ACT mode={session.mode}] {action.action} skill={action.skill_name} "
-            f"param_name={action.param_name} updated={action.updated_params}"
+            f"param_name={action.param_name} action_name={action.action_name} updated={action.updated_params}"
         )
 
         # 应用 LLM 声明的 updated_params
-        if action.updated_params:
+        if isinstance(action.updated_params, dict) and action.updated_params:
             session.collected_params.update(action.updated_params)
 
         # 自动 continue：lazy load 资源后再问 LLM
@@ -516,6 +661,39 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                     await _reply_with_result(message_id, result)
                     await _store.clear(user_id)
                 return
+
+        if action.action == "call_skill_action":
+            skill = get_registry().get(session.skill_name)
+            if skill is None:
+                await reply_text(_client, message_id, "内部错误：skill 丢失")
+                return
+
+            skill_action_count += 1
+            if skill_action_count > _MAX_SKILL_ACTIONS_PER_TURN:
+                await reply_text(_client, message_id, "处理步骤过多，请重新描述需求或稍后再试。")
+                await _store.save(user_id, session)
+                return
+
+            try:
+                obs = await execute_skill_action(skill, action.action_name, action.action_params)
+            except SkillActionError as e:
+                obs = SkillActionObservation(status="error", summary=str(e))
+            except Exception as e:
+                log.exception("skill action failed")
+                obs = SkillActionObservation(
+                    status="error",
+                    summary=f"{action.action_name or 'unknown'} 调用异常: {type(e).__name__}: {e}",
+                )
+
+            await _send_skill_action_artifact(message_id, obs)
+            await _maybe_send_skill_image_by_file_id(skill, message_id, obs)
+            current_text = (
+                f"[skill action `{action.action_name}` 已执行，observation 如下。"
+                f"请读取结果，保存关键 fileId/jobId 到 updated_params，并按 SKILL.md 继续下一步。]\n"
+                f"{obs.for_prompt()}"
+            )
+            await _store.save(user_id, session)
+            continue
 
         if action.action == "submit":
             skill = get_registry().get(session.skill_name)

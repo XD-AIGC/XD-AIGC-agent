@@ -2,14 +2,15 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
-# 8 个 action：
+# 9 个 action：
 #   Router only:   select_skill, reply (greeting), out_of_scope
-#   Skill only:    lookup_characters, lookup_options, submit, exit_skill
+#   Skill only:    lookup_characters, lookup_options, call_skill_action, submit, exit_skill
 #   通用:          ask_param, reply
 Action = Literal[
     "select_skill",
     "lookup_characters",
     "lookup_options",
+    "call_skill_action",
     "ask_param",
     "submit",
     "exit_skill",
@@ -25,6 +26,8 @@ class BotAction(BaseModel):
     param_value: Optional[str] = None
     message: Optional[str] = None
     submit_payload: Optional[dict] = None
+    action_name: Optional[str] = None
+    action_params: dict = Field(default_factory=dict)
     updated_params: dict = Field(default_factory=dict)
 
 

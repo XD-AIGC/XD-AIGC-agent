@@ -11,6 +11,7 @@ from openai import AsyncOpenAI
 
 from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from src.orchestrator.schema import BotAction, UserSession
+from src.skill.actions import format_action_catalog
 from src.skill.registry import get_registry
 from src.skill.schema import Skill
 
@@ -65,12 +66,21 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
         pending_param=session.pending_param or "无",
         completed=session.completed,
         loaded_resources_block=_format_loaded_resources(session.loaded_resources),
+        action_catalog_block=format_action_catalog(skill),
         completed_block=_COMPLETED_GUIDE if session.completed else "",
     )
     # 多轮对话：system + 历史 + 当前 user，让 LLM 看到自己上轮 reply（如 ABC 候选）
     messages: list[dict] = [{"role": "system", "content": sys_prompt}]
     messages.extend(session.chat_history)
-    messages.append({"role": "user", "content": user_message})
+    # _agentic_loop persists the current user turn before calling skill_decide.
+    # Avoid sending the same user message twice; duplicates like "3", "3" make
+    # models infer malformed values such as "33" or "billbill".
+    if not (
+        session.chat_history
+        and session.chat_history[-1].get("role") == "user"
+        and session.chat_history[-1].get("content") == user_message
+    ):
+        messages.append({"role": "user", "content": user_message})
     resp = await _client.beta.chat.completions.parse(
         model=LLM_MODEL,
         messages=messages,

@@ -1,7 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from src.orchestrator.schema import BotAction
-from src.orchestrator.llm import decide
+from src.orchestrator.schema import BotAction, UserSession
+from src.orchestrator.llm import decide, skill_decide
+from src.skill.schema import HttpBackend, Skill, SkillOutput
 
 
 def _mock_response(action: str, **kwargs) -> MagicMock:
@@ -53,3 +54,33 @@ async def test_decide_returns_botaction_instance():
         )
         action = await decide("你好", "{}")
     assert isinstance(action, BotAction)
+
+
+@pytest.mark.asyncio
+async def test_skill_decide_does_not_duplicate_current_user_message():
+    skill = Skill(
+        name="test-skill",
+        description="test",
+        api=HttpBackend(endpoint_path="/api/test"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    session = UserSession(
+        mode="skill",
+        skill_name="test-skill",
+        chat_history=[
+            {"role": "assistant", "content": "1. 皑皑 (aiai)\n2. 比尔 (bill)"},
+            {"role": "user", "content": "bill"},
+        ],
+    )
+
+    with patch("src.orchestrator.llm._client") as mock_client:
+        mock_client.beta.chat.completions.parse = AsyncMock(
+            return_value=_mock_response("reply", message="ok")
+        )
+        await skill_decide("bill", session, skill)
+
+    messages = mock_client.beta.chat.completions.parse.await_args.kwargs["messages"]
+    user_messages = [msg for msg in messages if msg["role"] == "user" and msg["content"] == "bill"]
+    assert len(user_messages) == 1

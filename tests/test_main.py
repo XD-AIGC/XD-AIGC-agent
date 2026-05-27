@@ -2,7 +2,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.main import _strip_mentions, _normalize_message, _load_lazy_resource, _is_retry
+from src.main import (
+    _strip_mentions,
+    _normalize_message,
+    _load_lazy_resource,
+    _is_retry,
+    _resolve_numbered_character_reply,
+)
 from src.skill.schema import Skill, HttpBackend, SkillOutput
 
 
@@ -256,6 +262,53 @@ def test_append_history_empty_content_noop():
     s = _US()
     _append_history(s, "user", "")
     assert s.chat_history == []
+
+
+def test_resolve_numbered_character_reply_maps_last_assistant_option():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        loaded_resources={
+            "lookup_characters": (
+                '[{"key":"aiai","name":"皑皑"},'
+                '{"key":"albert","name":"阿尔伯特二世"},'
+                '{"key":"andrew","name":"安德鲁"}]'
+            )
+        },
+    )
+    _append_history(s, "assistant", "1. 皑皑 (aiai)\n2. 阿尔伯特二世 (albert)\n3. 安德鲁 (andrew)")
+
+    status, resolved = _resolve_numbered_character_reply("3", s)
+
+    assert status == "resolved"
+    assert s.collected_params["characters"] == ["andrew"]
+    assert "编号 3" in resolved
+    assert "andrew" in resolved
+
+
+def test_resolve_numbered_character_reply_uses_name_when_key_missing():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        loaded_resources={'lookup_characters': '[{"key":"aiai","name":"皑皑"}]'},
+    )
+    _append_history(s, "assistant", "1. 皑皑 — 黑色短碎发+工装裤")
+
+    status, _ = _resolve_numbered_character_reply("选1", s)
+
+    assert status == "resolved"
+    assert s.collected_params["characters"] == ["aiai"]
+
+
+def test_resolve_numbered_character_reply_rejects_out_of_range_without_llm():
+    s = _US(mode="skill", skill_name="xd-poster-studio-v2")
+    _append_history(s, "assistant", "1. 皑皑 (aiai)\n2. 安德鲁 (andrew)")
+
+    status, message = _resolve_numbered_character_reply("33", s)
+
+    assert status == "error"
+    assert "编号 33 超出范围" in message
+    assert "1-2" in message
 
 
 @pytest.mark.asyncio
