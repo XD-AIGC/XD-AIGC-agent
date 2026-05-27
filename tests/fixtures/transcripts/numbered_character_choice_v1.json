@@ -45,7 +45,7 @@
           }
         },
         "v2_optional": {
-          "last_options_present": true
+          "last_options_present": false
         }
       }
     }
