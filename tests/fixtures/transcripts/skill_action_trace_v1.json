@@ -1,0 +1,62 @@
+{
+  "id": "skill_action_trace_v1",
+  "description": "runner 必须 mock skill action 并记录 action_name 序列，避免回归到真实 toolbox 调用。",
+  "initial_session": {
+    "mode": "skill",
+    "skill_name": "xd-poster-gen"
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "加载角色资源",
+      "skill_actions": [
+        {
+          "action": "call_skill_action",
+          "action_name": "lookup_characters",
+          "action_params": {
+            "query": {
+              "type": "npc"
+            }
+          }
+        },
+        {
+          "action": "reply",
+          "message": "角色资源已加载"
+        }
+      ],
+      "skill_action_results": [
+        {
+          "status": "success",
+          "summary": "lookup_characters 调用成功",
+          "data": {
+            "items": [
+              {
+                "key": "annie",
+                "name": "安妮"
+              }
+            ]
+          },
+          "artifact": {}
+        }
+      ],
+      "expect": {
+        "reply_text_contains": ["角色资源已加载"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 2,
+          "skill_action_calls": 1,
+          "skill_action_names": ["lookup_characters"],
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": false
+        }
+      }
+    }
+  ]
+}

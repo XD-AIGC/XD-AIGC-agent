@@ -1,6 +1,6 @@
 {
-  "id": "completed_capability_question_v1",
-  "description": "完成态下询问能力，不应进入 router/skill LLM，也不应 submit。",
+  "id": "completed_date_question_v1",
+  "description": "完成态下问日期，不应继续当前 skill，也不应 submit。",
   "initial_session": {
     "mode": "skill",
     "skill_name": "xd-poster-gen",
@@ -13,9 +13,9 @@
   "turns": [
     {
       "message_id": "<MSG_1>",
-      "text": "好的，你还能做其它什么事情？",
+      "text": "今天是周几",
       "expect": {
-        "reply_text_contains": ["我可以继续帮你做图"],
+        "reply_text_contains": ["我主要处理 AIGC 工具任务"],
         "trace": {
           "router_llm_calls": 0,
           "skill_llm_calls": 0,
@@ -31,8 +31,7 @@
           "completed": true
         },
         "v2_optional": {
-          "phase": "completed",
-          "last_processed_message_ids_contains": "<MSG_1>"
+          "phase": "completed"
         }
       }
     }

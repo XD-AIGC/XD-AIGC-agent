@@ -1,0 +1,14 @@
+{
+  "id": "restart_recovery_placeholder_xfail",
+  "description": "xfail：重启恢复需要 v2 active_job；0a 仅保留 fixture 占位。",
+  "xfail": {
+    "reason": "依赖 PR-0b active_job 字段与 PR-2b worker 恢复"
+  },
+  "requires_session_fields": ["active_job"],
+  "initial_session": {
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "completed": false
+  },
+  "turns": []
+}

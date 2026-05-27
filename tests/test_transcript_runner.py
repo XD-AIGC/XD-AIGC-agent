@@ -16,21 +16,37 @@ from tests.transcript_runner import (
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "transcripts"
+FIXTURES = load_transcript_fixtures(FIXTURE_DIR)
+
+
+def _fixture_params():
+    params = []
+    for fixture in FIXTURES:
+        marks = []
+        if fixture.xfail is not None:
+            marks.append(pytest.mark.xfail(reason=fixture.xfail.reason, strict=True))
+        params.append(pytest.param(fixture, id=fixture.id, marks=marks))
+    return params
 
 
 def test_transcript_fixtures_are_present_and_redacted():
-    fixtures = load_transcript_fixtures(FIXTURE_DIR)
-
-    assert {f["id"] for f in fixtures} >= {
+    assert {f.id for f in FIXTURES} >= {
+        "billbill_provenance_xfail",
         "completed_capability_question_v1",
+        "completed_date_question_v1",
+        "confirmation_submit_v1",
         "numbered_character_choice_v1",
         "ratio_choice_v1",
+        "restart_recovery_placeholder_xfail",
+        "running_chitchat_v1",
+        "skill_action_trace_v1",
     }
-    for fixture in fixtures:
+    assert len(FIXTURES) >= 8
+    for fixture in FIXTURES:
         assert_fixture_is_redacted(fixture)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fixture", load_transcript_fixtures(FIXTURE_DIR), ids=lambda f: f["id"])
-async def test_transcript_fixture_replays_current_v1_runtime(fixture):
-    await run_transcript_fixture(fixture)
+@pytest.mark.parametrize("fixture", _fixture_params())
+async def test_transcript_fixture_replays_current_v1_runtime(fixture, monkeypatch):
+    await run_transcript_fixture(fixture, monkeypatch)

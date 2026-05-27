@@ -1,0 +1,47 @@
+{
+  "id": "billbill_provenance_xfail",
+  "description": "xfail：当前 v1 会接受 LLM 把已确认 value 从 bill 扩写成 billbill；P3 provenance 应拒绝。",
+  "xfail": {
+    "reason": "依赖 P3 value provenance 校验"
+  },
+  "initial_session": {
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "collected_params": {
+      "characters": ["bill"]
+    }
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "bill",
+      "skill_actions": [
+        {
+          "action": "ask_param",
+          "param_name": "actionDesc",
+          "message": "请描述角色动作",
+          "updated_params": {
+            "characters": ["billbill"]
+          }
+        }
+      ],
+      "expect": {
+        "reply_text_contains": ["请描述角色动作"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 1,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "collected_params": {
+            "characters": ["bill"]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "id": "numbered_character_choice_v1",
-  "description": "用户回复角色编号 3，应解析为上一轮角色 Option，而不是 33。",
+  "description": "post-fix lock-down：用户回复角色编号 3，应解析为上一轮角色 Option，而不是 33。",
   "initial_session": {
     "mode": "skill",
     "skill_name": "xd-poster-gen",
@@ -30,6 +30,8 @@
         "trace": {
           "router_llm_calls": 0,
           "skill_llm_calls": 1,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
           "execute_calls": 0,
           "reply_text_calls": 1,
           "reply_image_calls": 0
@@ -43,7 +45,7 @@
           }
         },
         "v2_optional": {
-          "last_options_written": true
+          "last_options_present": true
         }
       }
     }
