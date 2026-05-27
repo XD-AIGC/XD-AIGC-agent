@@ -82,6 +82,8 @@ def test_load_session_preserves_v1_payload_fields():
         ),
         (ConversationPhase.running_job, {"mode": "skill", "completed": False, "state": "idle"}),
         (ConversationPhase.completed, {"mode": "skill", "completed": True, "state": "idle"}),
+        (ConversationPhase.cancelled, {"mode": "skill", "completed": False, "state": "idle"}),
+        (ConversationPhase.failed, {"mode": "skill", "completed": False, "state": "idle"}),
     ],
 )
 def test_sync_legacy_fields_mirror_matrix(phase, legacy):
@@ -163,6 +165,12 @@ def test_dump_session_accepts_v1_user_session_and_upgrades_to_v2():
     assert dumped["mode"] == "skill"
 
 
+def test_conversation_session_trims_processed_message_ids_on_validation():
+    session = ConversationSession(last_processed_message_ids=[f"msg-{i}" for i in range(25)])
+
+    assert session.last_processed_message_ids == [f"msg-{i}" for i in range(5, 25)]
+
+
 @pytest.mark.asyncio
 async def test_session_store_v2_helpers_roundtrip(monkeypatch):
     redis = _MemoryRedis()
@@ -177,6 +185,24 @@ async def test_session_store_v2_helpers_roundtrip(monkeypatch):
     assert loaded.phase == ConversationPhase.completed
     assert loaded.mode == "skill"
     assert loaded.completed is True
+
+
+@pytest.mark.asyncio
+async def test_session_store_save_accepts_conversation_session_and_syncs_legacy_fields(monkeypatch):
+    redis = _MemoryRedis()
+    store = SessionStore()
+    monkeypatch.setattr(store, "_redis", redis)
+
+    session = ConversationSession(phase=ConversationPhase.completed, skill_name="xd-poster-gen")
+
+    await store.save("user-1", session)
+
+    raw = json.loads(redis.data["session:user-1"])
+    assert raw["schema_version"] == 2
+    assert raw["phase"] == "completed"
+    assert raw["mode"] == "skill"
+    assert raw["completed"] is True
+    assert raw["state"] == "idle"
 
 
 class _MemoryRedis:
