@@ -32,6 +32,8 @@ class BotAction(BaseModel):
 
 
 class UserSession(BaseModel):
+    """Deprecated v1 runtime view. ConversationSession v2 is the new data model."""
+
     mode: Literal["router", "skill"] = "router"
     skill_name: Optional[str] = None
     collected_params: dict = Field(default_factory=dict)

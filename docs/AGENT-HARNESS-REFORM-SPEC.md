@@ -231,6 +231,7 @@ def load_session(raw: bytes) -> ConversationSession:
         data[“phase”] = (
             ConversationPhase.completed if data.get(“completed”)
             else ConversationPhase.collecting if data.get(“state”) == “collecting”
+            else ConversationPhase.collecting if data.get(“mode”) == “skill” or data.get(“skill_name”)
             else ConversationPhase.idle
         )
         data[“schema_version”] = 2
@@ -599,4 +600,3 @@ transcript fixture 入 git 前必须脱敏：
 
 - GitHub issue: https://github.com/XD-AIGC/XD-AIGC-agent/issues/2
 - `docs/AGENT-HARNESS-REFORM-OPEN-ITEMS.md`
-
