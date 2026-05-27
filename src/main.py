@@ -63,7 +63,9 @@ def _append_history(session, role: str, content: str) -> None:
 
 
 def _friendly_skill_error(e: Exception) -> str:
-    """把后端技术错误转成用户友好提示。"""
+    """把后端技术错误转成用户友好提示，HTTP 类错误带上 URL + 状态码方便定位。"""
+    import httpx
+
     msg = str(e)
     if "轮询超时" in msg or "timeout" in msg.lower():
         return "⏰ 生成超时，后端可能繁忙。可以说「再来一张」重试，或换个角色/动作试试。"
@@ -71,7 +73,17 @@ def _friendly_skill_error(e: Exception) -> str:
         return "⚠️ 后端返回了意外格式，已记录。请稍后重试，或换个简单一点的需求。"
     if "任务失败" in msg or "failed" in msg.lower():
         return f"❌ 后端处理失败：{msg.split('：', 1)[-1][:80]}\n可以试试换个角色/动作。"
-    # 其他（网络断 / 4xx / 5xx）
+    if isinstance(e, httpx.HTTPStatusError):
+        url = str(e.request.url)
+        code = e.response.status_code
+        return (
+            f"⚠️ 后端 HTTP {code}：`{url}`\n"
+            f"通常是 manifest.yaml 里 base_url / submit_path 指错了端口（看 docs/L20-1-SERVICES.md 端口表），"
+            f"或目标服务挂了。"
+        )
+    if isinstance(e, (httpx.ConnectError, httpx.ReadError, httpx.NetworkError)):
+        return f"⚠️ 连不上后端：{type(e).__name__}。可能服务挂了，让维护者看下 toolbox 子工具是否在跑。"
+    # 其他（未知异常）
     return f"⚠️ 处理失败（{type(e).__name__}），稍后再试一次。"
 
 
@@ -512,7 +524,14 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
 
 def main() -> None:
-    get_registry()
+    skills = get_registry()
+    # 启动健康检查：ping 每个 skill 的 base_url，提前发现 manifest 端口写错。
+    # 失败不阻断启动（其他 skill 仍可用），只在日志报警。
+    try:
+        from src.skill.health import health_check_skills
+        asyncio.run(health_check_skills(skills))
+    except Exception:
+        log.exception("[HEALTH] startup check failed (non-fatal)")
     # 启动 skill 文件 watcher，同事 push skill + cron 拉到本地后自动 hot-reload，不重启 bot
     try:
         from src.skill.watcher import start_skills_watcher

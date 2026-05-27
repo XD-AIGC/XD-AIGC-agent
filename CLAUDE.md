@@ -89,6 +89,7 @@ contact.  docx.  drive.  bitable.  calendar.  mail.  wiki.
 | `docs/PHASE.md` | Phase 0-3 详细进度 / 新 session 启动 checklist / 写代码自检（完整版） |
 | `docs/SKILL-SPEC.md` | 给同事的 skill 接入契约：manifest / SkillParam / Backend / enum 兜底 / SKILL.md 写作规范 |
 | `docs/DEPLOY.md` | L20_1 生产部署手册：Dockerfile / systemd / .env.prod / 健康检查 / 升级回滚 / 故障排查 |
+| `docs/L20-1-SERVICES.md` | L20-1 服务端口清单：toolbox 子工具端口表 / 基础设施 / 写 manifest 时怎么填 base_url |
 
 ### 关联仓库
 
