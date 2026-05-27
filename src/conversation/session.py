@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from src.conversation.options import OptionSet
 from src.orchestrator.schema import UserSession
 
 
@@ -59,8 +60,7 @@ class ConversationSession(BaseModel):
     initial_intent: str | None = None
     collected_params: dict[str, Any] = Field(default_factory=dict)
     pending_param: str | None = None
-    # OptionSet lands in PR-0c; keep this field opaque in PR-0b.
-    last_options: dict[str, Any] | None = None
+    last_options: OptionSet | None = None
     active_job: ActiveJob | None = None
     artifacts: dict[str, Any] = Field(default_factory=dict)
     completed_result: CompletedResult | None = None

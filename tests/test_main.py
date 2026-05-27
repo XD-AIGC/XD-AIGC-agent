@@ -11,6 +11,7 @@ from src.main import (
     _is_completed_skill_continuation,
     _resolve_numbered_character_reply,
 )
+from src.conversation.options import OptionItem, OptionSet
 from src.skill.schema import Skill, HttpBackend, SkillOutput
 
 
@@ -363,6 +364,123 @@ def test_resolve_numbered_character_reply_ignores_category_options():
 
     assert _resolve_numbered_character_reply("1", s) is None
     assert "characters" not in s.collected_params
+
+
+def test_resolve_numbered_character_reply_uses_structured_last_options_first():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        pending_param="ratio",
+        last_options=OptionSet(
+            id="ratio-1",
+            param_name="ratio",
+            source="enum",
+            created_at=100.0,
+            ttl_sec=9999999999,
+            items=[
+                OptionItem(index=1, label="2:3 竖版", value="2:3", param_name="ratio"),
+                OptionItem(index=2, label="3:2 横版", value="3:2", param_name="ratio"),
+            ],
+        ).model_dump(),
+    )
+    _append_history(s, "assistant", "1. 皑皑 (aiai)\n2. 安德鲁 (andrew)")
+
+    status, resolved = _resolve_numbered_character_reply("2", s)
+
+    assert status == "resolved"
+    assert s.collected_params["ratio"] == "3:2"
+    assert s.pending_param is None
+    assert s.last_options is None
+    assert "ratio" in resolved
+
+
+def test_resolve_numbered_character_reply_does_not_reuse_consumed_options_next_turn():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        pending_param="ratio",
+        last_options=OptionSet(
+            id="ratio-1",
+            param_name="ratio",
+            source="enum",
+            created_at=100.0,
+            ttl_sec=9999999999,
+            items=[
+                OptionItem(index=1, label="2:3 竖版", value="2:3", param_name="ratio"),
+                OptionItem(index=2, label="3:2 横版", value="3:2", param_name="ratio"),
+            ],
+        ),
+    )
+
+    assert _resolve_numbered_character_reply("2", s)[0] == "resolved"
+    assert _resolve_numbered_character_reply("1", s) is None
+    assert s.collected_params["ratio"] == "3:2"
+
+
+def test_resolve_numbered_character_reply_clears_expired_options_without_legacy_parse():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        pending_param="ratio",
+        last_options=OptionSet(
+            id="ratio-1",
+            param_name="ratio",
+            source="enum",
+            created_at=100.0,
+            ttl_sec=1,
+            items=[
+                OptionItem(index=1, label="2:3 竖版", value="2:3", param_name="ratio"),
+                OptionItem(index=2, label="3:2 横版", value="3:2", param_name="ratio"),
+            ],
+        ),
+    )
+    _append_history(s, "assistant", "1. 2:3 竖版\n2. 3:2 横版")
+
+    assert _resolve_numbered_character_reply("2", s) is None
+    assert s.last_options is None
+    assert "ratio" not in s.collected_params
+
+
+def test_legacy_option_set_inference_does_not_persist_after_match():
+    s = _US(mode="skill", skill_name="xd-poster-studio-v2", pending_param="ratio")
+    _append_history(s, "assistant", "1. 2:3 竖版海报\n2. 3:2 横版")
+
+    status, _ = _resolve_numbered_character_reply("2", s)
+
+    assert status == "resolved"
+    assert s.collected_params["ratio"] == "3:2"
+    assert s.last_options is None
+
+
+def test_legacy_option_set_inference_ignores_unknown_enum_param():
+    s = _US(mode="skill", skill_name="xd-poster-studio-v2", pending_param="quality")
+    _append_history(s, "assistant", "1. 超清\n2. 标准")
+
+    assert _resolve_numbered_character_reply("1", s) is None
+    assert s.last_options is None
+
+
+def test_legacy_option_set_inference_ignores_plain_paragraph():
+    s = _US(mode="skill", skill_name="xd-poster-studio-v2", pending_param="ratio")
+    _append_history(s, "assistant", "请告诉我你想要什么比例")
+
+    assert _resolve_numbered_character_reply("1", s) is None
+    assert s.last_options is None
+
+
+def test_legacy_option_set_inference_prioritizes_pending_ratio_over_characters():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        pending_param="ratio",
+        loaded_resources={'lookup_characters': '[{"key":"aiai","name":"皑皑"}]'},
+    )
+    _append_history(s, "assistant", "1. 皑皑 (aiai)\n2. 3:2 横版")
+
+    status, _ = _resolve_numbered_character_reply("2", s)
+
+    assert status == "resolved"
+    assert s.collected_params == {"ratio": "3:2"}
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,8 @@ from src.feishu.download import download_image, download_url
 from pathlib import Path
 
 from src.orchestrator.llm import router_decide, skill_decide
+from src.conversation.option_resolver import OptionResolver, build_resource_option_set
+from src.conversation.options import OptionSet
 from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
 from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
@@ -51,6 +53,7 @@ _SKILL_CHITCHAT_PHRASES = {
 _NUMBERED_REPLY_RE = re.compile(r"^\s*(?:选|选择|第)?\s*(\d{1,2})\s*(?:号|个)?\s*[。.!！?？]?\s*$")
 _NUMBERED_OPTION_RE = re.compile(r"^\s*(\d{1,2})[.．、)]\s*(.+?)\s*$")
 _OPTION_KEY_RE = re.compile(r"[（(]([A-Za-z0-9_-]+)[）)]")
+_RATIO_VALUE_RE = re.compile(r"^\d+\s*:\s*\d+")
 
 
 def _matches_phrase(text: str, phrases: set[str]) -> bool:
@@ -164,10 +167,59 @@ def _parse_numbered_options(message: str, resource_index: dict[str, dict]) -> di
     return options
 
 
+def _legacy_option_set_from_last_message(session) -> OptionSet | None:
+    message = _last_assistant_message(session)
+    if not message:
+        return None
+    pending_param = getattr(session, "pending_param", None)
+    if pending_param == "ratio":
+        option_items = []
+        for line in message.splitlines():
+            match = _NUMBERED_OPTION_RE.match(line)
+            if not match:
+                continue
+            idx = int(match.group(1))
+            label = re.sub(r"[*`]", "", match.group(2)).strip()
+            value_match = _RATIO_VALUE_RE.match(label)
+            if not value_match:
+                continue
+            value = re.sub(r"\s+", "", value_match.group(0))
+            option_items.append({
+                "index": idx,
+                "label": label,
+                "value": value,
+                "param_name": "ratio",
+            })
+        if not option_items:
+            return None
+        return OptionSet(
+            id="legacy:ratio",
+            param_name="ratio",
+            source="skill_runtime",
+            items=option_items,
+        )
+    if pending_param and pending_param != "characters":
+        return None
+    resource_index = _loaded_character_index(session)
+    character_options = _parse_numbered_options(message, resource_index)
+    if character_options:
+        items = [
+            {"key": value["key"], "name": value["name"]}
+            for _, value in sorted(character_options.items())
+        ]
+        return build_resource_option_set("characters", items)
+    return None
+
+
 def _resolve_numbered_character_reply(text: str, session) -> tuple[str, str] | None:
-    """Resolve bare numeric replies like "3" against the last character option list."""
+    """Resolve structured option replies, with legacy character parsing fallback."""
     if session.mode != "skill" or session.completed:
         return None
+
+    handled, structured = _resolve_last_options_reply(text, session)
+    if handled:
+        return structured
+
     match = _NUMBERED_REPLY_RE.match(text)
     if not match:
         return None
@@ -188,6 +240,49 @@ def _resolve_numbered_character_reply(text: str, session) -> tuple[str, str] | N
         f"如果 actionDesc 已有则继续按 SKILL.md 执行下一步。]"
     )
     return "resolved", prompt
+
+
+def _resolve_last_options_reply(text: str, session) -> tuple[bool, tuple[str, str] | None]:
+    raw_options = getattr(session, "last_options", None)
+    inferred = False
+    if raw_options is None:
+        raw_options = _legacy_option_set_from_last_message(session)
+        if raw_options is None:
+            return False, None
+        inferred = True
+    option_set = raw_options if isinstance(raw_options, OptionSet) else OptionSet.model_validate(raw_options)
+    result = OptionResolver().resolve(text, option_set)
+    match result.status:
+        case "matched":
+            if result.item is None:
+                return False, None
+        case "page":
+            if not inferred:
+                session.last_options = result.option_set
+            return True, ("error", result.message)
+        case "expired":
+            session.last_options = None
+            return True, None
+        case "out_of_range":
+            return True, ("error", result.message)
+        case "no_match":
+            if not _NUMBERED_REPLY_RE.match(text):
+                return False, None
+            return True, ("error", result.message)
+        case _:
+            return False, None
+
+    values = result.values if option_set.allow_multi else [result.item.value]
+    session.collected_params[option_set.param_name] = values if option_set.allow_multi else values[0]
+    if getattr(session, "pending_param", None) == option_set.param_name:
+        session.pending_param = None
+    session.last_options = None
+    prompt = (
+        f"[系统已解析用户选项：用户回复编号 {result.item.index}，对应参数 `{option_set.param_name}`，"
+        f"值为 {json.dumps(session.collected_params[option_set.param_name], ensure_ascii=False)}。"
+        "请继续按 SKILL.md 执行下一步。]"
+    )
+    return True, ("resolved", prompt)
 
 
 _HISTORY_MAX_TURNS = 10  # 最近 10 条（5 轮 user+assistant）

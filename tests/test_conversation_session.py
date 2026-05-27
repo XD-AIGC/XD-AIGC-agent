@@ -135,6 +135,7 @@ def test_to_legacy_user_session_degradation_matrix():
         "initial_intent": None,
         "completed": False,
         "chat_history": [],
+        "last_options": None,
         "state": "idle",
     }
     assert to_legacy_user_session(awaiting).state == "collecting"
