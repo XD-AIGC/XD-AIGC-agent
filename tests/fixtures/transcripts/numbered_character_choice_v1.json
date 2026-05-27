@@ -1,0 +1,51 @@
+{
+  "id": "numbered_character_choice_v1",
+  "description": "用户回复角色编号 3，应解析为上一轮角色 Option，而不是 33。",
+  "initial_session": {
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "loaded_resources": {
+      "lookup_characters": "[{\"key\":\"aiai\",\"name\":\"皑皑\"},{\"key\":\"albert\",\"name\":\"阿尔伯特二世\"},{\"key\":\"andrew\",\"name\":\"安德鲁\"}]"
+    },
+    "chat_history": [
+      {
+        "role": "assistant",
+        "content": "1. 皑皑 (aiai)\n2. 阿尔伯特二世 (albert)\n3. 安德鲁 (andrew)"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "3",
+      "skill_actions": [
+        {
+          "action": "ask_param",
+          "param_name": "actionDesc",
+          "message": "请描述角色动作"
+        }
+      ],
+      "expect": {
+        "reply_text_contains": ["请描述角色动作"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 1,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": false,
+          "collected_params": {
+            "characters": ["andrew"]
+          }
+        },
+        "v2_optional": {
+          "last_options_written": true
+        }
+      }
+    }
+  ]
+}

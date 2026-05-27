@@ -1,0 +1,59 @@
+{
+  "id": "ratio_choice_v1",
+  "description": "用户回复比例编号 4，当前 v1 应交给 skill LLM，不应当成角色编号。",
+  "initial_session": {
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "pending_param": "ratio",
+    "loaded_resources": {
+      "lookup_characters": "[{\"key\":\"aiai\",\"name\":\"皑皑\"}]"
+    },
+    "chat_history": [
+      {
+        "role": "assistant",
+        "content": "1. 2:3 竖版海报\n2. 9:16 手机竖版\n3. 1:1 方图\n4. 3:2 横版"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "4",
+      "skill_actions": [
+        {
+          "action": "ask_param",
+          "param_name": "ratio",
+          "message": "继续下一步",
+          "updated_params": {
+            "ratio": "3:2"
+          }
+        },
+        {
+          "action": "reply",
+          "message": "继续下一步"
+        }
+      ],
+      "expect": {
+        "reply_text_contains": ["继续下一步"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 2,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": false,
+          "collected_params": {
+            "ratio": "3:2"
+          }
+        },
+        "v2_optional": {
+          "last_options_written": true
+        }
+      }
+    }
+  ]
+}
