@@ -66,6 +66,31 @@ def _is_skill_chitchat(text: str) -> bool:
     return _matches_phrase(text, _SKILL_CHITCHAT_PHRASES)
 
 
+def _compact_text(text: str) -> str:
+    return re.sub(r"[\s，,。.!！?？~～]", "", text).lower().replace("其它", "其他")
+
+
+def _is_capability_question(text: str) -> bool:
+    t = _compact_text(text)
+    if not t:
+        return False
+    explicit = (
+        "你能做什么",
+        "能做什么",
+        "可以做什么",
+        "有什么功能",
+        "哪些功能",
+        "支持什么",
+        "能帮我什么",
+        "还能帮我什么",
+    )
+    if any(p in t for p in explicit):
+        return True
+    return ("还能" in t or "还可以" in t) and (
+        "做什么" in t or "什么事" in t or "哪些" in t or "啥" in t
+    )
+
+
 def _last_assistant_message(session) -> str:
     for msg in reversed(session.chat_history):
         if msg.get("role") == "assistant":
@@ -408,6 +433,21 @@ def _out_of_scope_msg() -> str:
     lines.append("\n请告诉我你想做哪个？")
     return "\n".join(lines)
 
+
+def _completion_followup_msg() -> str:
+    return "已完成。要继续这个任务、调整哪里，还是换别的需求？"
+
+
+def _completed_capability_msg() -> str:
+    return f"{_completion_followup_msg()}\n\n{_out_of_scope_msg()}"
+
+
+async def _reply_completion_followup(message_id: str, session) -> None:
+    msg = _completion_followup_msg()
+    await reply_text(_client, message_id, msg)
+    _append_history(session, "assistant", msg)
+
+
 # 飞书群里 @mention 在 content.text 里渲染为 "@_user_N" 占位符
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+\s*")
 
@@ -453,6 +493,7 @@ async def _execute_image_skill(skill_name: str, image_key: str, message_id: str,
         params = {image_param.name: ("frame.png", image_bytes, "image/png")}
         result = await execute(skill, params)
         await _reply_with_result(message_id, result)
+        await reply_text(_client, message_id, "已完成。还要继续处理另一张图，还是换别的需求？")
     except Exception as e:
         log.exception("image skill execution failed")
         await reply_text(_client, message_id, _friendly_skill_error(e))
@@ -548,6 +589,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 result = await execute(skill, payload)
                 await _reply_with_result(message_id, result)
                 await _maybe_save_cached_step1(payload, result, user_id)
+                await _reply_completion_followup(message_id, session)
                 # session.completed 保持 True，允许继续连续 retry
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
@@ -557,6 +599,14 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 log.exception("retry submit failed")
                 await reply_text(_client, message_id, _friendly_skill_error(e))
             return
+
+    if session.completed and session.mode == "skill" and _is_capability_question(text):
+        msg = _completed_capability_msg()
+        _append_history(session, "user", text)
+        _append_history(session, "assistant", msg)
+        await reply_text(_client, message_id, msg)
+        await _store.save(user_id, session)
+        return
 
     # Skill mode 下的问候/含糊短句不要交给 Skill LLM，避免误判为继续 submit。
     if (
@@ -670,6 +720,15 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             return
 
         if action.action == "ask_param":
+            if action.param_name and action.param_name in session.collected_params:
+                session.pending_param = None
+                current_text = (
+                    f"[参数 `{action.param_name}` 已收集为 "
+                    f"{json.dumps(session.collected_params[action.param_name], ensure_ascii=False)}，"
+                    "请继续下一步，不要重复询问该参数。]"
+                )
+                await _store.save(user_id, session)
+                continue
             session.pending_param = action.param_name
             skill = get_registry().get(session.skill_name) if session.skill_name else None
             base_msg = action.message or "请提供参数。"
@@ -738,7 +797,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             if await _maybe_poll_skill_job(skill, message_id, obs):
                 session.pending_param = None
                 session.loaded_resources = {}
-                session.completed = True
+                if obs.artifact.get("polled_to_completion"):
+                    session.completed = True
+                    await _reply_completion_followup(message_id, session)
                 await _store.save(user_id, session)
                 return
             current_text = (
@@ -768,6 +829,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 if isinstance(payload, dict):
                     session.collected_params.update(payload)
                 session.completed = True  # 触发 retry 快路径 + LLM completed 引导
+                await _reply_completion_followup(message_id, session)
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
                 await reply_text(_client, message_id, _friendly_skill_error(e))
