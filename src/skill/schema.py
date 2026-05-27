@@ -22,6 +22,9 @@ class SkillOutput(BaseModel):
 class HttpBackend(BaseModel):
     """单次 HTTP 调用，同步返回结果。frame-bg-remover 用这个。"""
     type: Literal["http"] = "http"
+    # base_url：覆盖 TOOLBOX_BASE_URL。每个 skill 的后端可能在不同端口
+    # （如 xd-poster-studio-v2 在 8090）。不填则回退 TOOLBOX_BASE_URL。
+    base_url: Optional[str] = None
     endpoint_path: str
     method: Literal["POST", "GET"] = "POST"
     content_type: Literal["multipart/form-data", "application/json"] = "multipart/form-data"
@@ -30,6 +33,7 @@ class HttpBackend(BaseModel):
 class PollBackend(BaseModel):
     """异步任务：POST 拿 job_id → 轮询 → 完成后取结果。xd-poster-gen 用这个。"""
     type: Literal["poll"]
+    base_url: Optional[str] = None  # 见 HttpBackend.base_url 说明
     submit_path: str
     submit_method: Literal["POST", "GET"] = "POST"
     submit_content_type: Literal["application/json", "multipart/form-data"] = "application/json"

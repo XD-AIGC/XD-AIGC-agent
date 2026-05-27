@@ -34,8 +34,10 @@ class SkillExecutionError(Exception):
 
 # ---- 通用工具 ----
 
-def _full_url(path: str) -> str:
-    return TOOLBOX_BASE_URL.rstrip("/") + path
+def _full_url(api, path: str) -> str:
+    """优先用 backend 自带的 base_url（每个 skill 独立后端），回退 TOOLBOX_BASE_URL。"""
+    base = getattr(api, "base_url", None) or TOOLBOX_BASE_URL
+    return base.rstrip("/") + path
 
 
 _PATH_SEG_RE = re.compile(r"([^.\[\]]+)|\[(\d+)\]")
@@ -56,7 +58,7 @@ def _extract_by_path(data: Any, path: str) -> Any:
 
 async def _execute_http(skill: Skill, params: dict) -> ExecuteResult:
     api: HttpBackend = skill.api  # type: ignore[assignment]
-    url = _full_url(api.endpoint_path)
+    url = _full_url(api, api.endpoint_path)
     async with allowed_client() as client:
         if api.content_type == "multipart/form-data":
             resp = await client.request(api.method, url, files=params)
@@ -70,7 +72,7 @@ async def _execute_http(skill: Skill, params: dict) -> ExecuteResult:
 
 async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
     api: PollBackend = skill.api  # type: ignore[assignment]
-    submit_url = _full_url(api.submit_path)
+    submit_url = _full_url(api, api.submit_path)
     async with allowed_client() as client:
         # 1) 提交任务
         if api.submit_content_type == "multipart/form-data":
@@ -86,7 +88,7 @@ async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
 
         # 2) 轮询
         deadline = asyncio.get_event_loop().time() + api.poll_timeout_sec
-        poll_url = _full_url(api.poll_path_template.format(job_id=job_id))
+        poll_url = _full_url(api, api.poll_path_template.format(job_id=job_id))
 
         while True:
             if asyncio.get_event_loop().time() > deadline:

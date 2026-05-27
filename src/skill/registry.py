@@ -62,6 +62,12 @@ def _load_skill_dir(skill_dir: Path) -> Skill | None:
                 log.warning(f"skill {skill_dir.name} lazy_resources[{k}] 未知类型: {type(v).__name__}")
         raw["lazy_resources"] = transformed
 
+    # api.base_url：每个 skill 可指定独立后端地址（如 toolbox 子工具的专属端口）
+    # 必须也加入 HTTP 白名单，否则 executor 调 submit/poll 会被 allowlist 拦截
+    api_section = raw.get("api") or {}
+    if isinstance(api_section, dict) and api_section.get("base_url"):
+        _register_http_resource_url(api_section["base_url"])
+
     return Skill.model_validate(_ensure_api_type(raw))
 
 
