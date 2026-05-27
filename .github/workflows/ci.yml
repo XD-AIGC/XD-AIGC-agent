@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ENV: test
+      FEISHU_APP_ID: cli_dummy
+      FEISHU_APP_SECRET: dummy
+      LLM_API_KEY: dummy
+      LLM_BASE_URL: https://llm-proxy.tapsvc.com/v1
+      LLM_MODEL: claude-sonnet-4-6
+      REDIS_URL: redis://localhost:6379/0
+      TOOLBOX_BASE_URL: http://localhost:8080
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Check banned Feishu APIs
+        run: bash ci/check-banned-apis.sh
+
+      - name: Check transcript fixture redaction
+        run: python ci/check-transcript-fixtures.py
+
+      - name: Run tests
+        run: pytest -q

@@ -1,0 +1,32 @@
+{
+  "id": "running_chitchat_v1",
+  "description": "当前 skill 任务上下文中用户插话/感谢，不应进入 LLM 或 submit。",
+  "initial_session": {
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "completed": false
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "谢谢",
+      "expect": {
+        "reply_text_contains": ["我还在当前任务里"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 0,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": false
+        }
+      }
+    }
+  ]
+}
