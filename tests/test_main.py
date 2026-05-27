@@ -8,6 +8,7 @@ from src.main import (
     _load_lazy_resource,
     _is_retry,
     _is_capability_question,
+    _is_completed_skill_continuation,
     _resolve_numbered_character_reply,
 )
 from src.skill.schema import Skill, HttpBackend, SkillOutput
@@ -164,6 +165,18 @@ def test_is_capability_question_negative():
     negatives = ["还能做一张吗", "再来一张", "换成横版", "好的"]
     for p in negatives:
         assert not _is_capability_question(p), f"{p} should NOT be capability question"
+
+
+def test_is_completed_skill_continuation():
+    positives = ["再来一张", "换成横版", "主标题改成生活", "比例 3:2", "调整一下颜色"]
+    for p in positives:
+        assert _is_completed_skill_continuation(p), f"{p} should continue completed skill"
+
+
+def test_is_completed_skill_continuation_negative():
+    negatives = ["hello, 今天是周几啊", "好的", "谢谢", "你能做什么"]
+    for p in negatives:
+        assert not _is_completed_skill_continuation(p), f"{p} should NOT continue completed skill"
 
 
 # --- enum options block ---
@@ -398,7 +411,7 @@ async def test_completed_session_greeting_does_not_submit(monkeypatch):
     execute.assert_not_called()
     reply_text.assert_called_once()
     sent = reply_text.call_args[0][2]
-    assert "要再做一张" in sent
+    assert "要继续这个任务" in sent
     assert store.saved[0] == "user-1"
 
 
@@ -451,6 +464,102 @@ async def test_completed_session_capability_question_does_not_submit(monkeypatch
     assert "要继续这个任务" in sent
     assert "我目前可以帮你做这些事" in sent
     assert "生成海报" in sent
+    assert store.saved[0] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_completed_session_unrelated_question_does_not_submit(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import UserSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.executor import ExecuteResult
+    from src.skill.schema import Skill, HttpBackend, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"bad": "payload"}))
+    execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = UserSession(
+        mode="skill",
+        skill_name="xd-poster-gen",
+        collected_params={"characters": ["harry"], "actionDesc": "踢球"},
+        completed=True,
+    )
+
+    await main_mod._agentic_loop("hello, 今天是周几啊", session, "user-1", "msg-1")
+
+    skill_decide.assert_not_called()
+    execute.assert_not_called()
+    reply_text.assert_called_once()
+    sent = reply_text.call_args[0][2]
+    assert "AIGC 工具任务" in sent
+    assert "要继续这个任务" in sent
+    assert store.saved[0] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_completed_session_adjustment_still_reaches_skill_llm(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import UserSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.schema import Skill, HttpBackend, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="reply", message="已收到修改"))
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = UserSession(
+        mode="skill",
+        skill_name="xd-poster-gen",
+        collected_params={"characters": ["harry"], "actionDesc": "踢球"},
+        completed=True,
+    )
+
+    await main_mod._agentic_loop("换成横版", session, "user-1", "msg-1")
+
+    skill_decide.assert_awaited_once()
+    reply_text.assert_called_once()
+    assert reply_text.call_args[0][2] == "已收到修改"
     assert store.saved[0] == "user-1"
 
 

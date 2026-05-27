@@ -91,6 +91,21 @@ def _is_capability_question(text: str) -> bool:
     )
 
 
+def _is_completed_skill_continuation(text: str) -> bool:
+    """Completed skill sessions only continue on explicit retry or edit intent."""
+    t = _compact_text(text)
+    if not t:
+        return False
+    markers = (
+        "再来", "再生成", "再做", "再画", "重新生成", "重做",
+        "改", "换", "调整", "变成", "设成",
+        "标题", "主标题", "副标题", "文案", "比例", "构图",
+        "角色", "动作", "颜色", "色调", "风格", "尺寸",
+        "横版", "竖版", "方图", "手机",
+    )
+    return any(marker in t for marker in markers)
+
+
 def _last_assistant_message(session) -> str:
     for msg in reversed(session.chat_history):
         if msg.get("role") == "assistant":
@@ -442,6 +457,10 @@ def _completed_capability_msg() -> str:
     return f"{_completion_followup_msg()}\n\n{_out_of_scope_msg()}"
 
 
+def _completed_boundary_msg() -> str:
+    return f"我主要处理 AIGC 工具任务。\n\n{_completion_followup_msg()}"
+
+
 async def _reply_completion_followup(message_id: str, session) -> None:
     msg = _completion_followup_msg()
     await reply_text(_client, message_id, msg)
@@ -602,6 +621,18 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
     if session.completed and session.mode == "skill" and _is_capability_question(text):
         msg = _completed_capability_msg()
+        _append_history(session, "user", text)
+        _append_history(session, "assistant", msg)
+        await reply_text(_client, message_id, msg)
+        await _store.save(user_id, session)
+        return
+
+    if (
+        session.completed
+        and session.mode == "skill"
+        and not _is_completed_skill_continuation(text)
+    ):
+        msg = _completed_boundary_msg()
         _append_history(session, "user", text)
         _append_history(session, "assistant", msg)
         await reply_text(_client, message_id, msg)
