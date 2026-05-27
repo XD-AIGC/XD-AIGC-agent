@@ -137,6 +137,31 @@ def to_legacy_user_session(session: ConversationSession) -> UserSession:
     )
 
 
+def infer_phase_from_legacy_fields(value: Any) -> ConversationPhase:
+    """Infer ConversationPhase from a v2 session, v1 model, or raw mapping."""
+    if isinstance(value, ConversationSession):
+        return value.phase
+    if isinstance(value, dict):
+        data = dict(value)
+    elif hasattr(value, "model_dump"):
+        data = value.model_dump()
+    else:
+        data = {
+            "phase": getattr(value, "phase", None),
+            "completed": getattr(value, "completed", None),
+            "state": getattr(value, "state", None),
+            "mode": getattr(value, "mode", None),
+            "skill_name": getattr(value, "skill_name", None),
+        }
+    raw_phase = data.get("phase")
+    if raw_phase is not None:
+        try:
+            return raw_phase if isinstance(raw_phase, ConversationPhase) else ConversationPhase(raw_phase)
+        except ValueError:
+            pass
+    return _phase_from_v1(data)
+
+
 def _decode_raw(raw: bytes | str | dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw, dict):
         return dict(raw)

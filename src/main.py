@@ -23,7 +23,7 @@ from src.conversation.classifier import (
 from src.conversation.option_resolver import OptionResolver, build_resource_option_set
 from src.conversation.options import OptionSet
 from src.conversation.response import ResponseComposer
-from src.conversation.session import ConversationPhase
+from src.conversation.session import ConversationPhase, infer_phase_from_legacy_fields
 from src.conversation.state_machine import SideEffect, StateMachine
 from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
@@ -508,19 +508,7 @@ def _response_composer() -> ResponseComposer:
 
 
 def _phase_for_session(session) -> ConversationPhase:
-    raw_phase = getattr(session, "phase", None)
-    if raw_phase is not None:
-        try:
-            return raw_phase if isinstance(raw_phase, ConversationPhase) else ConversationPhase(raw_phase)
-        except ValueError:
-            pass
-    if getattr(session, "completed", False):
-        return ConversationPhase.completed
-    if getattr(session, "state", None) == "collecting":
-        return ConversationPhase.collecting
-    if getattr(session, "mode", None) == "skill" or getattr(session, "skill_name", None):
-        return ConversationPhase.collecting
-    return ConversationPhase.idle
+    return infer_phase_from_legacy_fields(session)
 
 
 def _classify_turn(text: str, session):

@@ -33,7 +33,7 @@ class ResponseComposer:
         return f"{self.completed_followup()}\n\n{self.out_of_scope()}"
 
     def completed_boundary(self) -> str:
-        return f"我主要处理 AIGC 工具任务。\n\n{self.completed_followup()}"
+        return f"我主要处理 AIGC 工具任务。\n\n{self.completed_followup()}\n\n{self.out_of_scope()}"
 
     def skill_chitchat(self, *, completed: bool) -> str:
         if completed:

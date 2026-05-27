@@ -24,6 +24,8 @@ CONFIRM_PHRASES = {"确认", "确定", "可以", "没问题", "就这样"}
 CANCEL_PHRASES = {"取消", "算了", "不要了", "停止"}
 CONTINUE_WAIT_PHRASES = {"继续等", "继续等待", "等一下", "再等等"}
 ASK_STATUS_PHRASES = {"还在吗", "好了没", "进度", "什么状态", "生成好了吗"}
+ASK_STATUS_SUFFIXES = {"还在吗", "好了没", "什么状态", "生成好了吗", "进度怎么样", "进度如何"}
+SENTENCE_PARTICLES = ("吧", "啊", "呀", "啦", "哦", "喔", "呢")
 
 
 class TurnIntent(str, Enum):
@@ -90,8 +92,7 @@ class TurnClassifier:
             return None
         if _matches_phrase(text, CONTINUE_WAIT_PHRASES):
             return ClassifiedTurn(TurnIntent.continue_wait, reason="running job control")
-        compact = compact_text(text)
-        if any(phrase in compact for phrase in ASK_STATUS_PHRASES):
+        if _matches_status_question(text):
             return ClassifiedTurn(TurnIntent.ask_status, reason="running job status")
         return None
 
@@ -99,6 +100,8 @@ class TurnClassifier:
         if _matches_phrase(text, CANCEL_PHRASES):
             return ClassifiedTurn(TurnIntent.cancel, reason="bare cancel")
         compact = compact_text(text)
+        if _strip_sentence_particles(compact) in {compact_text(phrase) for phrase in CANCEL_PHRASES}:
+            return ClassifiedTurn(TurnIntent.cancel, reason="cancel with sentence particle")
         if any(compact.startswith(compact_text(phrase)) for phrase in CANCEL_PHRASES):
             return ClassifiedTurn(TurnIntent.needs_llm, source="llm", reason="cancel has object")
         return None
@@ -154,6 +157,19 @@ def compact_text(text: str) -> str:
 def _matches_phrase(text: str, phrases: set[str]) -> bool:
     cleaned = text.strip().rstrip("。.!！?？ ").lower()
     return cleaned in {phrase.lower() for phrase in phrases}
+
+
+def _matches_status_question(text: str) -> bool:
+    compact = compact_text(text)
+    if compact in {compact_text(phrase) for phrase in ASK_STATUS_PHRASES}:
+        return True
+    return any(compact.endswith(suffix) for suffix in ASK_STATUS_SUFFIXES)
+
+
+def _strip_sentence_particles(text: str) -> str:
+    while text.endswith(SENTENCE_PARTICLES):
+        text = text[:-1]
+    return text
 
 
 def _is_numbered_reply(text: str) -> bool:

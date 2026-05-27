@@ -11,6 +11,7 @@ from src.conversation.session import ConversationPhase
 
 class SideEffect(str, Enum):
     clear_context = "clear_context"
+    clear_last_options = "clear_last_options"
     invoke_skill_runtime = "invoke_skill_runtime"
     no_op = "no_op"
     reply_boundary = "reply_boundary"
@@ -42,6 +43,12 @@ class StateMachine:
             return self._awaiting_confirmation(intent)
         if phase == ConversationPhase.running_job:
             return self._running_job(intent)
+        if phase == ConversationPhase.selecting_skill:
+            return self._selecting_skill(intent)
+        if phase == ConversationPhase.cancelled:
+            return self._cancelled(intent)
+        if phase == ConversationPhase.failed:
+            return self._failed(intent)
         if phase == ConversationPhase.idle:
             return self._idle(intent)
         return Transition(phase, [SideEffect.no_op])
@@ -88,6 +95,33 @@ class StateMachine:
         if intent == TurnIntent.chitchat:
             return Transition(ConversationPhase.completed, [SideEffect.reply_chitchat])
         return Transition(ConversationPhase.completed, [SideEffect.reply_boundary])
+
+    def _selecting_skill(self, intent: TurnIntent) -> Transition:
+        if intent == TurnIntent.answer_option:
+            return Transition(
+                ConversationPhase.collecting,
+                [SideEffect.clear_last_options, SideEffect.invoke_skill_runtime],
+                True,
+            )
+        if intent == TurnIntent.cancel:
+            return Transition(ConversationPhase.idle, [SideEffect.clear_context, SideEffect.reply_cancelled])
+        return Transition(ConversationPhase.selecting_skill, [SideEffect.invoke_skill_runtime], True)
+
+    def _cancelled(self, intent: TurnIntent) -> Transition:
+        if intent == TurnIntent.start_skill:
+            return Transition(ConversationPhase.selecting_skill, [SideEffect.invoke_skill_runtime], True)
+        if intent == TurnIntent.ask_capability:
+            return Transition(ConversationPhase.cancelled, [SideEffect.reply_capability])
+        return Transition(ConversationPhase.cancelled, [SideEffect.reply_boundary])
+
+    def _failed(self, intent: TurnIntent) -> Transition:
+        if intent == TurnIntent.retry:
+            return Transition(ConversationPhase.running_job, [SideEffect.submit_job])
+        if intent == TurnIntent.modify_param:
+            return Transition(ConversationPhase.collecting, [SideEffect.invoke_skill_runtime], True)
+        if intent == TurnIntent.cancel:
+            return Transition(ConversationPhase.idle, [SideEffect.clear_context])
+        return Transition(ConversationPhase.failed, [SideEffect.reply_boundary])
 
 
 def _coerce_phase(value: ConversationPhase | str) -> ConversationPhase:
