@@ -10,7 +10,7 @@
 
 | # | 决策 | 备注 |
 |---|---|---|
-| D1 | 后台通知走 **A1（Background Worker + Delayed Reply）** | 前提 R1 通过；不通过退化 A2 |
+| D1 | 后台通知走 **A1（Background Worker + Delayed Reply）** | R1 已实测通过：`message.reply` 至少 5.6h 后仍有效 |
 | D2 | v1 回退**不保留** `running_job` 通知能力 | 灰度回退是应急止血，回退时手工群播兜底 |
 | D3 | 当前明确**单实例约束**，多实例扩展留下一阶段 | spec 写明 contract，不实现 Redis lock |
 | D4 | `running_job` 恢复采用**「用户触发恢复」**，非启动时自动扫 | reply-only 约束下，启动时自动 poll 大量旧 job 可能无处 reply；用户下一句"还在吗/继续等"触发 resume |
@@ -18,41 +18,30 @@
 
 ---
 
-## 调研项（必须先做完才能写实施细节）
+## 调研结论（2026-05-27 已完成）
 
 ### R1. 飞书 `message.reply` 延迟有效期 ⭐ 卡 A1（架构前提，必须实测）
-- **问题**：`message.reply(message_id, content)` 在 `message_id` 发出 5/10/30/60 分钟后是否仍能成功？
-- **怎么查**：
-  1. lark-oapi 文档 + 飞书开放平台 IM v1 文档（必要但不充分）
-  2. **必须实测**：脚本发一条 user msg → sleep N 秒 → reply → 看响应码
-  3. N 取 60s / 300s / 1800s / 3600s
-- **决策影响**：
-  - 不限时 → A1 直接走
-  - ≤ 10 分钟 → A1 配合 timeout 给"继续等"按钮
-  - ≤ 5 分钟 → 退化 A2
-  - reply 失效且禁 `message.create` → **不能承诺后台自动通知**，改"用户主动查询状态"模式
+- **结论**：A1 成立。真实 `message_id` 在 94.2 分钟、337.6 分钟后再次 `message.reply` 均返回 `success/code=0`。
+- **证据**：本地 Conda env 使用当前 `.env` 凭证，仅调用 `im.v1.message.reply`；未调用 `message.create`。
+- **边界**：只能宣称"已实测至少 5.6h 有效"，不要写成永久有效。超过业务 timeout 很久的 job 仍走 D4 用户触发恢复。
+- **spec 影响**：Background Worker 可在 job 完成后 delayed reply；仍保留 timeout 菜单和用户主动查询入口。
 
 ### R2. toolbox 子工具的 cancel 能力
-- **问题**：`frame-bg-remover` 等子工具的 poll API 是否支持外部 cancel？
-- **怎么查**：扫 toolbox 仓库 API 文档 + 试 `POST /cancel/{jobId}`
-- **决策影响**（直接影响 spec §12 + 用户文案）：
-  - 支持 → 文案"已取消生成"
-  - 不支持 → 文案"我已停止等待这次结果，后续即使完成也不会再发送"
+- **结论**：当前两个生图 skill（8085 `xd-town-studio`、8090 `xd-poster-studio-v2`）不支持服务端 cancel。
+- **证据**：toolbox server route 只有 submit/poll/image/history；线上 8085/8090 候选 `POST /api/cancel/*`、`/api/jobs/*/cancel` 均 404。前端取消只是停止本地轮询。
+- **边界**：shared batch API 有 `/jobs/{job_id}/cancel`，但这不是当前两个 skill 使用的后端。
+- **spec 影响**：取消文案必须写"我已停止等待这次结果，后续即使完成也不会再发送"，不能写"已取消生成"。
 
 ### R3. lark-oapi WebSocket 进程内 background task 生命周期（必要但不充分）
-- **问题 1**：`asyncio.create_task` 起的 poll worker 在 `ws.start()` 的 event loop 里能否长跑 ≥120s？
-- **问题 2**：**进程重启时内存 task 会丢，Redis `active_job` 是唯一信源**——v2 不能把 job 状态只放内存
-- **怎么查**：写最小 demo 跑 5 分钟 + 重启场景演练
-- **决策影响**：
-  - 能长跑 → A1 用 `asyncio.create_task`
-  - 不能 → 起独立 `asyncio.Queue` + 长跑 consumer
-  - 重启场景与 D4 联动：恢复策略统一走"用户触发"
+- **结论**：进程内 task 可行，但只能作为执行器，不能作为状态源。
+- **证据**：lark-oapi `ws/client.py` 使用模块级 event loop，`start()` 创建 ping/receive task 后 `run_until_complete(_select())` 常驻；最小 demo 中 `ensure_future()` 调度的 worker 在 callback 返回后继续运行 130.1s 并完成。
+- **边界**：systemd restart / process crash 一定会丢内存 task；Redis `active_job` 是唯一可信状态。
+- **spec 影响**：A1 用 `asyncio.create_task` 或等价 JobController worker；恢复统一走 D4 用户触发，不做启动时扫旧 job 自动 reply。
 
 ### R4. Redis `active_job` 序列化体积
-- **问题**：`ActiveJob.payload` 序列化后大小？是否需要强制只存 `fileId` 引用？
-- **决策影响**：
-  - <10KB → 直接存
-  - 偏大 → spec 强制 `payload` 只存引用，禁存 bytes
+- **结论**：正常 compact payload 很小，但必须限制内容形态。
+- **测量**：`xd-town-studio` 典型 active job 约 816B；`xd-poster-studio-v2` 典型约 731B；展开 8 个角色长描述约 14KB；误存 1MB base64 图片约 1,049,331B。
+- **spec 影响**：`active_job.payload` 只存 compact 参数、`fileId/public_id`、必要短文本；禁止 bytes/base64/signed URL/完整 lazy_resource 列表。建议软上限 10KB，超过则拒绝创建 job 并要求改为引用。
 
 ---
 
@@ -81,7 +70,7 @@
 | S11 | #11 | OptionSet paging 由 `OptionResolver` 切分（lazy_resource 仍一次性返回）|
 | S12 | #12 | 补完整 State Transition Table：`(phase, intent) → (next_phase, side_effects)` |
 | S13 | #13 | `OptionSet.scope: Literal["skill_param","system"]`，timeout 菜单是 system |
-| S14 | #14 | 依赖 R2 结论；文案分支见 R2 |
+| S14 | #14 | 按 R2 结论写本地取消语义：停止等待并丢弃后续结果，不承诺取消后端生成 |
 | S15 | #15 | TurnClassifier 仲裁：OptionResolver > deterministic > LLM |
 | S16 | #16 | 定义 `ObservationReducer` 契约 |
 | S17 | #17 | simple skill（无 `system_prompt_core`）走 fast-path |
@@ -98,7 +87,7 @@
 | S21 | transcript 脱敏标准：open_id → `<USER_N>`，file_id → `<FILE_N>` |
 | S22 | 区分 `chat_history`（短，给 LLM）vs `transcript`（长全脱敏，给 eval）|
 | S23 | observation 累积超 3 条自动摘要 |
-| S25 | `ActiveJob.payload` 只存 `fileId` 引用（依赖 R4）|
+| S25 | `ActiveJob.payload` 只存 compact refs；禁 bytes/base64/signed URL/完整资源列表，软上限 10KB |
 
 ---
 
@@ -126,18 +115,15 @@
 ## 执行顺序（Johnny 建议，已采纳）
 
 1. ✅ open-items.md 合入 main（commit `e62552c`）
-2. **R1-R4 调研，R1 必有结论**
+2. ✅ R1-R4 调研完成（R1 已实测通过）
 3. 按 S1-S8 + S26/S27 改 `AGENT-HARNESS-REFORM-SPEC.md` 到 spec v2
 4. 同步重写 `AGENT-HARNESS-REFORM-PLAN.md` 为新 4 阶段结构
 5. 再开始实现（新 P0 → 新 P4）
 
 ---
 
-## 待 Johnny 确认（剩余）
+## 当前状态
 
 1. ✅ D1 / D2 / D4 / D5（A1 + v1 不保 + 用户触发恢复 + OptionSet 过期刷新）
-2. ❓ **调研 R1-R4 分工**：
-   - R1 需要真实飞书 app 凭证（你 .env 有），建议你本地跑
-   - R2 需要 toolbox 服务可达，我可在 SSH 隧道下跑
-   - R3 可独立写 demo
-   - R4 可独立跑
+2. ✅ R1-R4 已完成，结论已回写本文件
+3. 下一步：按 S1-S8 + S26/S27 改 spec v2，并同步重写 plan 为新 P0-P4
