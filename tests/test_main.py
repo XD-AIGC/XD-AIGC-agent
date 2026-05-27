@@ -301,7 +301,11 @@ def test_resolve_numbered_character_reply_uses_name_when_key_missing():
 
 
 def test_resolve_numbered_character_reply_rejects_out_of_range_without_llm():
-    s = _US(mode="skill", skill_name="xd-poster-studio-v2")
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        loaded_resources={'lookup_characters': '[{"key":"aiai","name":"皑皑"},{"key":"andrew","name":"安德鲁"}]'},
+    )
     _append_history(s, "assistant", "1. 皑皑 (aiai)\n2. 安德鲁 (andrew)")
 
     status, message = _resolve_numbered_character_reply("33", s)
@@ -309,6 +313,30 @@ def test_resolve_numbered_character_reply_rejects_out_of_range_without_llm():
     assert status == "error"
     assert "编号 33 超出范围" in message
     assert "1-2" in message
+
+
+def test_resolve_numbered_character_reply_ignores_ratio_options():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        loaded_resources={'lookup_characters': '[{"key":"aiai","name":"皑皑"}]'},
+    )
+    _append_history(s, "assistant", "1. 2:3 竖版海报\n2. 9:16 手机竖版\n3. 1:1 方图\n4. 3:2 横版")
+
+    assert _resolve_numbered_character_reply("4", s) is None
+    assert "characters" not in s.collected_params
+
+
+def test_resolve_numbered_character_reply_ignores_category_options():
+    s = _US(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        loaded_resources={'lookup_characters': '[{"key":"aiai","name":"皑皑"}]'},
+    )
+    _append_history(s, "assistant", "1. 赛季更新\n2. NPC角色\n3. NPC动物")
+
+    assert _resolve_numbered_character_reply("1", s) is None
+    assert "characters" not in s.collected_params
 
 
 @pytest.mark.asyncio

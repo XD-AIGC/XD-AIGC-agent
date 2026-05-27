@@ -70,26 +70,11 @@ async def _execute_http(skill: Skill, params: dict) -> ExecuteResult:
 
 # ---- Poll 异步任务 ----
 
-async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
-    api: PollBackend = skill.api  # type: ignore[assignment]
-    submit_url = _full_url(api, api.submit_path)
+async def _poll_existing(api: PollBackend, job_id: str) -> ExecuteResult:
+    deadline = asyncio.get_event_loop().time() + api.poll_timeout_sec
+    poll_url = _full_url(api, api.poll_path_template.format(job_id=job_id))
+
     async with allowed_client() as client:
-        # 1) 提交任务
-        if api.submit_content_type == "multipart/form-data":
-            submit_resp = await client.request(api.submit_method, submit_url, files=params)
-        else:
-            submit_resp = await client.request(api.submit_method, submit_url, json=params)
-        submit_resp.raise_for_status()
-        submit_data = submit_resp.json()
-        job_id = submit_data.get(api.job_id_field)
-        if not job_id:
-            raise SkillExecutionError(f"submit 成功但缺 job_id 字段 '{api.job_id_field}'")
-        log.info(f"[POLL] submitted, job_id={job_id}")
-
-        # 2) 轮询
-        deadline = asyncio.get_event_loop().time() + api.poll_timeout_sec
-        poll_url = _full_url(api, api.poll_path_template.format(job_id=job_id))
-
         while True:
             if asyncio.get_event_loop().time() > deadline:
                 raise SkillExecutionError(f"任务 {job_id} 轮询超时（{api.poll_timeout_sec}s）")
@@ -108,6 +93,29 @@ async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
                 except (KeyError, IndexError, TypeError) as e:
                     raise SkillExecutionError(f"完成但取结果失败 (path={api.result_path}): {e}")
                 return ExecuteResult(kind="url", result_url=result_url, metadata=poll_data)
+
+
+async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
+    api: PollBackend = skill.api  # type: ignore[assignment]
+    submit_url = _full_url(api, api.submit_path)
+    async with allowed_client() as client:
+        if api.submit_content_type == "multipart/form-data":
+            submit_resp = await client.request(api.submit_method, submit_url, files=params)
+        else:
+            submit_resp = await client.request(api.submit_method, submit_url, json=params)
+        submit_resp.raise_for_status()
+        submit_data = submit_resp.json()
+    job_id = submit_data.get(api.job_id_field)
+    if not job_id:
+        raise SkillExecutionError(f"submit 成功但缺 job_id 字段 '{api.job_id_field}'")
+    log.info(f"[POLL] submitted, job_id={job_id}")
+    return await _poll_existing(api, job_id)
+
+
+async def poll_existing_job(skill: Skill, job_id: str) -> ExecuteResult:
+    if not isinstance(skill.api, PollBackend):
+        raise SkillExecutionError(f"skill {skill.name} 不是 poll backend")
+    return await _poll_existing(skill.api, job_id)
 
 
 # ---- 公共入口 ----

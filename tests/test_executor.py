@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 import httpx
 
-from src.skill.executor import _extract_by_path, _execute_http, _execute_poll, SkillExecutionError, execute
+from src.skill.executor import _extract_by_path, _execute_http, _execute_poll, poll_existing_job, SkillExecutionError, execute
 from src.skill.schema import Skill, HttpBackend, PollBackend, SkillOutput
 
 
@@ -87,6 +87,21 @@ async def test_poll_backend_success_first_try():
         result = await _execute_poll(_poll_skill(), {"k": "v"})
     assert result.kind == "url"
     assert result.result_url == "http://x/result.png"
+
+
+@pytest.mark.asyncio
+async def test_poll_existing_job_skips_submit():
+    poll_resp = _resp(200, json_data={"status": "completed", "images": [{"url": "http://x/result.png"}]})
+
+    with patch("src.skill.executor.allowed_client") as mock_cli:
+        async_cli = AsyncMock()
+        async_cli.get = AsyncMock(return_value=poll_resp)
+        mock_cli.return_value.__aenter__.return_value = async_cli
+        result = await poll_existing_job(_poll_skill(), "abc")
+    assert result.kind == "url"
+    assert result.result_url == "http://x/result.png"
+    async_cli.get.assert_awaited_once()
+    assert str(async_cli.get.await_args.args[0]).endswith("/poll/abc")
 
 
 @pytest.mark.asyncio

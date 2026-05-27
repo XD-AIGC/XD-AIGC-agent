@@ -14,7 +14,7 @@ from src.orchestrator.llm import router_decide, skill_decide
 from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
 from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
-from src.skill.executor import ExecuteResult, execute, SkillExecutionError
+from src.skill.executor import ExecuteResult, execute, poll_existing_job, SkillExecutionError
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
@@ -114,7 +114,9 @@ def _parse_numbered_options(message: str, resource_index: dict[str, dict]) -> di
         key_match = _OPTION_KEY_RE.search(body)
         key = key_match.group(1) if key_match else None
         name = re.split(r"[（(]|—|-|：|:", body, maxsplit=1)[0].strip()
-        item = resource_index.get(key or "") or resource_index.get(name) or {}
+        item = resource_index.get(key or "") or resource_index.get(name)
+        if not item:
+            continue
         resolved_key = item.get("key") or item.get("id") or key or name
         resolved_name = item.get("name") or name or resolved_key
         if isinstance(resolved_key, str) and resolved_key:
@@ -271,6 +273,17 @@ def _extract_image_file_id(data) -> str | None:
     return None
 
 
+def _extract_job_id(data, skill: Skill) -> str | None:
+    if not isinstance(data, dict) or not isinstance(skill.api, PollBackend):
+        return None
+    candidates = [skill.api.job_id_field, "v2JobId", "jobId", "job_id"]
+    for key in candidates:
+        val = data.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
 async def _maybe_send_skill_image_by_file_id(skill: Skill, message_id: str, obs: SkillActionObservation) -> None:
     """Deterministically fetch/send image previews when an action returns only fileId."""
     if obs.status != "success" or obs.content_bytes is not None or obs.artifact.get("sent_to_user"):
@@ -289,6 +302,41 @@ async def _maybe_send_skill_image_by_file_id(skill: Skill, message_id: str, obs:
     if image_obs.artifact.get("sent_to_user"):
         obs.artifact["sent_to_user"] = True
         obs.artifact["image_fileId"] = file_id
+
+
+async def _send_execute_result(message_id: str, result: ExecuteResult, skill: Skill) -> bool:
+    if result.kind == "url" and not result.result_url:
+        file_id = _extract_image_file_id(result.metadata)
+        if file_id:
+            obs = await execute_skill_action(skill, "get_image", {"path_params": {"fileId": file_id}})
+            await _send_skill_action_artifact(message_id, obs)
+            return bool(obs.artifact.get("sent_to_user"))
+    await _reply_with_result(message_id, result)
+    return True
+
+
+async def _maybe_poll_skill_job(skill: Skill, message_id: str, obs: SkillActionObservation) -> bool:
+    job_id = _extract_job_id(obs.data, skill)
+    if not job_id:
+        return False
+    try:
+        result = await poll_existing_job(skill, job_id)
+        await _send_execute_result(message_id, result, skill)
+        obs.artifact["job_id"] = job_id
+        obs.artifact["polled_to_completion"] = True
+        obs.artifact["sent_to_user"] = True
+        return True
+    except SkillExecutionError as e:
+        await reply_text(_client, message_id, _friendly_skill_error(e))
+        obs.artifact["job_id"] = job_id
+        obs.artifact["poll_failed"] = str(e)
+        return True
+    except Exception as e:
+        log.exception("failed to poll skill job")
+        await reply_text(_client, message_id, _friendly_skill_error(e))
+        obs.artifact["job_id"] = job_id
+        obs.artifact["poll_failed"] = f"{type(e).__name__}: {e}"
+        return True
 
 
 class LazyResourceError(Exception):
@@ -687,6 +735,12 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
             await _send_skill_action_artifact(message_id, obs)
             await _maybe_send_skill_image_by_file_id(skill, message_id, obs)
+            if await _maybe_poll_skill_job(skill, message_id, obs):
+                session.pending_param = None
+                session.loaded_resources = {}
+                session.completed = True
+                await _store.save(user_id, session)
+                return
             current_text = (
                 f"[skill action `{action.action_name}` 已执行，observation 如下。"
                 f"请读取结果，保存关键 fileId/jobId 到 updated_params，并按 SKILL.md 继续下一步。]\n"
