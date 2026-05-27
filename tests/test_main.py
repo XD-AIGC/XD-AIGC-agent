@@ -375,7 +375,7 @@ def test_resolve_numbered_character_reply_uses_structured_last_options_first():
             param_name="ratio",
             source="enum",
             created_at=100.0,
-            ttl_sec=300,
+            ttl_sec=9999999999,
             items=[
                 OptionItem(index=1, label="2:3 竖版", value="2:3", param_name="ratio"),
                 OptionItem(index=2, label="3:2 横版", value="3:2", param_name="ratio"),

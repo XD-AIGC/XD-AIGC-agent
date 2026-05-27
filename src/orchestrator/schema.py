@@ -1,6 +1,8 @@
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
+from src.conversation.options import OptionSet
+
 
 # 9 个 action：
 #   Router only:   select_skill, reply (greeting), out_of_scope
@@ -46,5 +48,7 @@ class UserSession(BaseModel):
     # 最近 N 条 user/assistant 对话给 LLM 看，避免它忘记自己上轮 reply 了什么
     # 格式：[{"role": "user"|"assistant", "content": str}]
     chat_history: list[dict] = Field(default_factory=list)
+    # PR-0c transitional field: structured options shown to the user.
+    last_options: Optional[OptionSet] = None
     # 向后兼容字段（旧 Redis 数据反序列化用，新代码逻辑通过 mode 判断）
     state: Literal["idle", "collecting"] = "idle"
