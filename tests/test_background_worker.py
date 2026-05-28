@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -205,6 +206,53 @@ async def test_background_poll_discards_cancelled_local_job_result(monkeypatch):
 
     poll_existing_job.assert_awaited_once()
     reply_text.assert_not_called()
+    assert store.session.active_job.cancelled_locally is True
+
+
+@pytest.mark.asyncio
+async def test_background_poll_final_send_waits_for_user_lock_and_honors_cancel(monkeypatch):
+    from src import main as main_mod
+
+    user_id = "race-user"
+    main_mod._user_locks.pop(user_id, None)
+    active_job = _active_job("running")
+    store = _FakeStore(_session(active_job))
+    polled = asyncio.Event()
+    send_started = asyncio.Event()
+
+    async def poll_existing_job(*_args):
+        polled.set()
+        return ExecuteResult(kind="text", text="late result")
+
+    async def send_execute_result(*_args):
+        send_started.set()
+        return True
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "poll_existing_job", poll_existing_job)
+    monkeypatch.setattr(main_mod, "_send_execute_result", send_execute_result)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": _skill()})
+    monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
+
+    lock = main_mod._get_user_lock(user_id)
+    async with lock:
+        task = asyncio.create_task(main_mod._background_poll(user_id, active_job, "msg-source"))
+        await asyncio.wait_for(polled.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert not send_started.is_set()
+
+        cancelled_session = store.session.model_copy(deep=True)
+        cancelled_session.active_job = active_job.model_copy(update={
+            "status": "cancelled",
+            "cancelled_locally": True,
+        })
+        cancelled_session.phase = ConversationPhase.completed
+        cancelled_session.completed = True
+        await store.save_conversation(user_id, cancelled_session)
+
+    await asyncio.wait_for(task, timeout=1)
+
+    assert not send_started.is_set()
     assert store.session.active_job.cancelled_locally is True
 
 
