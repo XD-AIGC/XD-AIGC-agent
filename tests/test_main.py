@@ -1051,5 +1051,5 @@ async def test_running_job_status_triggers_recovery_worker_without_llm(monkeypat
     execute.assert_not_called()
     start_worker.assert_called_once_with("user-1", active_job, "msg-current")
     reply_text.assert_called_once()
-    assert "继续" in reply_text.call_args[0][2]
+    assert "还在生成中" in reply_text.call_args[0][2]
     assert store.saved[0] == "user-1"

@@ -669,6 +669,14 @@ def _result_artifacts(result: ExecuteResult) -> dict:
     return artifacts
 
 
+def _retry_payload(session) -> dict:
+    completed_result = getattr(session, "completed_result", None)
+    submitted_payload = getattr(completed_result, "submitted_payload", None)
+    if isinstance(submitted_payload, dict) and submitted_payload:
+        return dict(submitted_payload)
+    return dict(getattr(session, "collected_params", {}) or {})
+
+
 async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str) -> None:
     skill = get_registry().get(active_job.skill_name)
     if skill is None:
@@ -741,11 +749,36 @@ async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str)
         await _save_conversation_session(user_id, session)
 
 
-async def _handle_running_job_turn(session, user_id: str, message_id: str) -> bool:
+def _running_job_reply(intent: TurnIntent) -> str:
+    if intent == TurnIntent.cancel:
+        return "这次生成已经开始，当前暂不支持取消后端任务。我会继续等待，完成后在这里回复。"
+    if intent == TurnIntent.chitchat:
+        return _response_composer().skill_chitchat(completed=False)
+    if intent == TurnIntent.ask_status:
+        return "还在生成中，完成后会在这里回复。"
+    if intent == TurnIntent.continue_wait:
+        return "好的，我继续帮你等待这次生成，完成后会在这里回复。"
+    return "我继续帮你等待这次生成，完成后会在这里回复。"
+
+
+def _timeout_running_job_reply(intent: TurnIntent) -> str:
+    if intent == TurnIntent.cancel:
+        return f"这次生成还没完成，当前暂不支持取消后端任务。\n\n{_timeout_options_msg()}"
+    return _timeout_options_msg()
+
+
+async def _handle_running_job_turn(session, user_id: str, message_id: str, intent: TurnIntent) -> bool:
     active_job = _job_controller.recovery_candidate(session) if isinstance(session, ConversationSession) else None
     if active_job is None:
         return False
-    msg = "我继续帮你等待这次生成，完成后会在这里回复。"
+    if active_job.status == "timeout":
+        msg = _timeout_running_job_reply(intent)
+        await reply_text(_client, message_id, msg)
+        _append_history(session, "assistant", msg)
+        await _store.save(user_id, session)
+        return True
+
+    msg = _running_job_reply(intent)
     await reply_text(_client, message_id, msg)
     _start_background_worker(user_id, active_job, message_id)
     _append_history(session, "assistant", msg)
@@ -881,7 +914,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     transition = _state_machine.transition(phase, turn.intent)
 
     if phase == ConversationPhase.running_job:
-        if await _handle_running_job_turn(session, user_id, message_id):
+        if await _handle_running_job_turn(session, user_id, message_id, turn.intent):
             return
 
     # Retry 快路径：session 已完成 + 用户说「再来一张」类短语 → 不进 LLM，直接重 submit
@@ -889,13 +922,14 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         session.completed
         and session.mode == "skill"
         and session.skill_name
-        and session.collected_params
+        and _retry_payload(session)
         and turn.intent == TurnIntent.retry
     ):
         skill = get_registry().get(session.skill_name)
         if skill is not None:
-            log.info(f"[RETRY] skill={session.skill_name} payload_keys={list(session.collected_params.keys())}")
-            payload = await _maybe_inject_cached_step1(dict(session.collected_params), user_id)
+            base_payload = _retry_payload(session)
+            log.info(f"[RETRY] skill={session.skill_name} payload_keys={list(base_payload.keys())}")
+            payload = await _maybe_inject_cached_step1(base_payload, user_id)
             submission = await _begin_submit_job(session, user_id, message_id, skill, payload, "retry")
             if submission is None:
                 return
