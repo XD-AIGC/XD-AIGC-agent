@@ -50,12 +50,17 @@ def mock_io():
          patch.object(main_mod, "upload_image", new=AsyncMock(return_value="img_key_xx")) as ui, \
          patch.object(main_mod, "download_url", new=AsyncMock(return_value=b"img_bytes")) as du, \
          patch.object(main_mod, "execute", new=AsyncMock()) as ex, \
+         patch.object(main_mod, "submit_poll_job", new=AsyncMock(return_value="backend-job")) as sp, \
+         patch.object(main_mod, "poll_existing_job", new=AsyncMock()) as pe, \
          patch.object(main_mod, "router_decide", new=AsyncMock()) as rd, \
          patch.object(main_mod, "skill_decide", new=AsyncMock()) as sd, \
+         patch.object(main_mod, "_maybe_save_cached_step1", new=AsyncMock()) as sc, \
          patch.object(main_mod, "get_registry", new=lambda: _fake_registry()):
         yield {"reply_text": rt, "reply_image": ri, "upload_image": ui,
                "download_url": du, "execute": ex,
-               "router_decide": rd, "skill_decide": sd}
+               "submit_poll_job": sp, "poll_existing_job": pe,
+               "router_decide": rd, "skill_decide": sd,
+               "save_cached_step1": sc}
 
 
 def _fake_registry() -> dict[str, Skill]:
@@ -86,6 +91,12 @@ def _text_msg(text: str) -> dict:
     return {"text": text}
 
 
+async def _drain_background_tasks() -> None:
+    tasks = list(main_mod._background_tasks.values())
+    if tasks:
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+
+
 # ---------- 场景 1：Router → Skill → submit → 出图（happy path）----------
 
 @pytest.mark.asyncio
@@ -98,17 +109,20 @@ async def test_e2e_happy_path_submit_to_image(clean_session, mock_io):
         action="submit",
         submit_payload={"characters": ["harry"], "actionDesc": "踢球", "compositionType": "default"},
     )
-    mock_io["execute"].return_value = ExecuteResult(
+    mock_io["poll_existing_job"].return_value = ExecuteResult(
         kind="url",
         result_url="https://example.com/img.png",
         metadata={"intermediateImages": {"characterActionFileId": "fid_step1_xxx"}},
     )
 
     await main_mod._process_locked("msg_1", "text", _text_msg("画一张哈瑞踢球的海报"), uid)
+    await _drain_background_tasks()
 
     assert mock_io["router_decide"].call_count == 1
     assert mock_io["skill_decide"].call_count == 1
-    mock_io["execute"].assert_called_once()
+    mock_io["execute"].assert_not_called()
+    mock_io["submit_poll_job"].assert_called_once()
+    mock_io["poll_existing_job"].assert_called_once()
     mock_io["download_url"].assert_called_once_with("https://example.com/img.png")
     mock_io["upload_image"].assert_called_once()
     mock_io["reply_image"].assert_called_once()
@@ -129,15 +143,18 @@ async def test_e2e_retry_fast_path_skips_llm(clean_session, mock_io):
         collected_params={"characters": ["harry"], "actionDesc": "踢球"},
         completed=True,
     ))
-    mock_io["execute"].return_value = ExecuteResult(
+    mock_io["poll_existing_job"].return_value = ExecuteResult(
         kind="url", result_url="https://example.com/2.png", metadata={}
     )
 
     await main_mod._process_locked("msg_retry", "text", _text_msg("再来一张"), uid)
+    await _drain_background_tasks()
 
     mock_io["router_decide"].assert_not_called()
     mock_io["skill_decide"].assert_not_called()
-    mock_io["execute"].assert_called_once()
+    mock_io["execute"].assert_not_called()
+    mock_io["submit_poll_job"].assert_called_once()
+    mock_io["poll_existing_job"].assert_called_once()
     mock_io["reply_image"].assert_called_once()
 
 
@@ -199,12 +216,13 @@ async def test_e2e_submit_failure_preserves_session(clean_session, mock_io):
         action="submit",
         submit_payload={"characters": ["harry"], "actionDesc": "踢球"},
     )
-    mock_io["execute"].side_effect = SkillExecutionError("任务 v2_xxx 轮询超时(300s)")
+    mock_io["poll_existing_job"].side_effect = SkillExecutionError("任务 v2_xxx 轮询超时(300s)")
 
     await main_mod._process_locked("msg_submit_fail", "text", _text_msg("提交"), uid)
+    await _drain_background_tasks()
 
     sent_msgs = [c[0][2] for c in mock_io["reply_text"].call_args_list]
-    assert any("⏰" in m and "超时" in m for m in sent_msgs)
+    assert any("生成还没完成" in m and "继续等待" in m for m in sent_msgs)
     sess = await main_mod._store.get(uid)
     assert sess.skill_name == "xd-poster-gen"
     assert sess.collected_params.get("characters") == ["harry"]

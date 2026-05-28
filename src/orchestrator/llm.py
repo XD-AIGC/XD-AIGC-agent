@@ -42,6 +42,16 @@ def _format_loaded_resources(loaded: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+def _format_chat_history(chat_history: list) -> list[dict]:
+    messages: list[dict] = []
+    for message in chat_history:
+        if isinstance(message, dict):
+            messages.append(message)
+        elif hasattr(message, "model_dump"):
+            messages.append(message.model_dump())
+    return messages
+
+
 async def router_decide(user_message: str, session: UserSession) -> BotAction:
     skills = get_registry()
     skill_list = _format_router_skills(skills)
@@ -71,7 +81,7 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
     )
     # 多轮对话：system + 历史 + 当前 user，让 LLM 看到自己上轮 reply（如 ABC 候选）
     messages: list[dict] = [{"role": "system", "content": sys_prompt}]
-    messages.extend(session.chat_history)
+    messages.extend(_format_chat_history(session.chat_history))
     # _agentic_loop persists the current user turn before calling skill_decide.
     # Avoid sending the same user message twice; duplicates like "3", "3" make
     # models infer malformed values such as "33" or "billbill".

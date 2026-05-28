@@ -95,7 +95,10 @@ async def _poll_existing(api: PollBackend, job_id: str) -> ExecuteResult:
                 return ExecuteResult(kind="url", result_url=result_url, metadata=poll_data)
 
 
-async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
+async def submit_poll_job(skill: Skill, params: dict) -> str:
+    """Submit a poll backend job and return its backend job id."""
+    if not isinstance(skill.api, PollBackend):
+        raise SkillExecutionError(f"skill {skill.name} 不是 poll backend")
     api: PollBackend = skill.api  # type: ignore[assignment]
     submit_url = _full_url(api, api.submit_path)
     async with allowed_client() as client:
@@ -109,6 +112,12 @@ async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
     if not job_id:
         raise SkillExecutionError(f"submit 成功但缺 job_id 字段 '{api.job_id_field}'")
     log.info(f"[POLL] submitted, job_id={job_id}")
+    return job_id
+
+
+async def _execute_poll(skill: Skill, params: dict) -> ExecuteResult:
+    api: PollBackend = skill.api  # type: ignore[assignment]
+    job_id = await submit_poll_job(skill, params)
     return await _poll_existing(api, job_id)
 
 

@@ -1,5 +1,5 @@
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -777,7 +777,7 @@ async def test_ask_param_with_updated_value_continues_without_reasking(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_submit_sends_completion_followup(monkeypatch):
+async def test_submit_acknowledges_background_job(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession
     from src.orchestrator.schema import BotAction
@@ -796,6 +796,7 @@ async def test_submit_sends_completion_followup(monkeypatch):
     reply_text = AsyncMock()
     skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"topic": "coffee"}))
     execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    start_worker = Mock(return_value=True)
     fake_skill = Skill(
         name="xd-poster-gen",
         description="生成海报",
@@ -808,6 +809,7 @@ async def test_submit_sends_completion_followup(monkeypatch):
     monkeypatch.setattr(main_mod, "reply_text", reply_text)
     monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
     monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
     monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
     monkeypatch.setattr(
         main_mod,
@@ -820,9 +822,11 @@ async def test_submit_sends_completion_followup(monkeypatch):
     await main_mod._agentic_loop("生成海报", session, "user-1", "msg-1")
 
     sent = [call.args[2] for call in reply_text.call_args_list]
-    assert sent == ["done", "已完成。要继续这个任务、调整哪里，还是换别的需求？"]
+    assert sent == ["✅ 已开始生成，预计 30-60 秒，请稍候…"]
+    execute.assert_not_called()
+    start_worker.assert_called_once()
     assert store.saved[0] == "user-1"
-    assert session.completed is True
+    assert session.completed is False
 
 
 @pytest.mark.asyncio
@@ -944,3 +948,108 @@ async def test_submit_payload_rejection_logs_internal_detail(monkeypatch, caplog
     assert "不能保存到任务状态" in reply_text.call_args[0][2]
     assert "payload rejected" in caplog.text
     assert "$.image_base64" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_submit_starts_background_worker_without_inline_execute(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import BotAction, UserSession
+    from src.skill.executor import ExecuteResult
+    from src.skill.schema import PollBackend, Skill, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"topic": "coffee"}))
+    execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    start_worker = Mock(return_value=True)
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=PollBackend(type="poll", submit_path="/api/jobs", poll_path_template="/api/jobs/{job_id}"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+
+    await main_mod._agentic_loop("生成海报", session, "user-1", "msg-1")
+
+    execute.assert_not_called()
+    start_worker.assert_called_once()
+    reply_text.assert_called_once()
+    assert "已开始生成" in reply_text.call_args[0][2]
+    assert store.saved[0] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_running_job_status_triggers_recovery_worker_without_llm(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ActiveJob, ConversationPhase, ConversationSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.executor import ExecuteResult
+    from src.skill.schema import PollBackend, Skill, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    active_job = ActiveJob(
+        job_id="backend-job",
+        skill_name="xd-poster-gen",
+        action_name="submit",
+        payload={"topic": "coffee"},
+        source_message_id="msg-source",
+        status="running",
+        started_at=90.0,
+    )
+    session = ConversationSession(
+        phase=ConversationPhase.running_job,
+        mode="skill",
+        skill_name="xd-poster-gen",
+        active_job=active_job,
+    )
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"bad": "payload"}))
+    execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    start_worker = Mock(return_value=True)
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=PollBackend(type="poll", submit_path="/api/jobs", poll_path_template="/api/jobs/{job_id}"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    await main_mod._agentic_loop("还在吗", session, "user-1", "msg-current")
+
+    skill_decide.assert_not_called()
+    execute.assert_not_called()
+    start_worker.assert_called_once_with("user-1", active_job, "msg-current")
+    reply_text.assert_called_once()
+    assert "还在生成中" in reply_text.call_args[0][2]
+    assert store.saved[0] == "user-1"
