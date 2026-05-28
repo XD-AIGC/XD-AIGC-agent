@@ -30,6 +30,7 @@ from src.conversation.session import (
     ConversationSession,
     Message,
     infer_phase_from_legacy_fields,
+    sync_legacy_fields,
 )
 from src.conversation.state_machine import SideEffect, StateMachine
 from src.session.redis_store import SessionStore
@@ -651,7 +652,19 @@ def _active_job_matches(current: ActiveJob | None, expected: ActiveJob) -> bool:
 
 
 def _timeout_options_msg() -> str:
-    return "生成还没完成。你可以：\n1. 继续等待\n2. 重试\n3. 修改信息\n4. 取消"
+    return _response_composer().timeout_options()
+
+
+def _continue_wait_msg() -> str:
+    return _response_composer().continue_wait()
+
+
+def _modify_prompt_msg() -> str:
+    return _response_composer().modify_prompt()
+
+
+def _local_cancel_msg() -> str:
+    return _response_composer().local_cancel()
 
 
 def _is_timeout_error(exc: Exception) -> bool:
@@ -677,28 +690,92 @@ def _retry_payload(session) -> dict:
     return dict(getattr(session, "collected_params", {}) or {})
 
 
-async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str) -> None:
-    skill = get_registry().get(active_job.skill_name)
-    if skill is None:
-        log.error("[JOB] skill missing for background job: %s", active_job.skill_name)
-        return
-    current_job = active_job
-    try:
-        if isinstance(skill.api, PollBackend):
-            if current_job.status == "submitted":
-                backend_job_id = await submit_poll_job(skill, current_job.payload)
-                current_job = current_job.model_copy(update={"job_id": backend_job_id, "status": "running"})
-                session = await _load_conversation_session(user_id)
-                if not _active_job_matches(getattr(session, "active_job", None), active_job):
-                    return
-                session.active_job = current_job
-                session.phase = ConversationPhase.running_job
-                await _save_conversation_session(user_id, session)
-            result = await poll_existing_job(skill, current_job.job_id)
-        else:
-            current_job = current_job.model_copy(update={"status": "running"})
-            result = await execute(skill, current_job.payload)
+def _mark_job_locally_cancelled(session: ConversationSession, active_job: ActiveJob) -> ActiveJob:
+    cancelled = active_job.model_copy(
+        update={
+            "status": "cancelled",
+            "cancelled_locally": True,
+            "last_poll_at": time.time(),
+            "last_observation": {"action": "local_cancel"},
+        }
+    )
+    session.active_job = cancelled
+    session.phase = ConversationPhase.completed
+    session.last_options = None
+    sync_legacy_fields(session)
+    return cancelled
 
+
+def _move_timeout_job_to_modify(session: ConversationSession, active_job: ActiveJob) -> None:
+    if isinstance(active_job.payload, dict):
+        session.collected_params.update(active_job.payload)
+    session.active_job = None
+    session.phase = ConversationPhase.collecting
+    session.completed = False
+    session.last_options = None
+    sync_legacy_fields(session)
+
+
+def _resume_timeout_job(session: ConversationSession, active_job: ActiveJob) -> ActiveJob:
+    resumed = active_job.model_copy(
+        update={
+            "status": "running",
+            "cancelled_locally": False,
+            "last_poll_at": time.time(),
+            "last_observation": {"action": "continue_wait"},
+        }
+    )
+    session.active_job = resumed
+    session.phase = ConversationPhase.running_job
+    sync_legacy_fields(session)
+    return resumed
+
+
+def _resolve_timeout_choice(text: str, intent: TurnIntent) -> str | None:
+    match = _NUMBERED_REPLY_RE.match(text)
+    if match:
+        return {
+            "1": "continue_wait",
+            "2": "retry",
+            "3": "modify",
+            "4": "cancel",
+        }.get(match.group(1))
+
+    compact = _compact_text(text)
+    if intent == TurnIntent.continue_wait or compact in {"继续等", "继续等待", "等一下", "再等等"}:
+        return "continue_wait"
+    if intent == TurnIntent.retry or compact in {"重试", "再来", "再来一张", "重新生成", "再生成"}:
+        return "retry"
+    if intent == TurnIntent.modify_param or compact in {"修改", "修改信息", "调整", "改一下"}:
+        return "modify"
+    if intent == TurnIntent.cancel or compact in {"取消", "算了", "不要了", "停止"}:
+        return "cancel"
+    return None
+
+
+async def _persist_background_running_job(
+    user_id: str,
+    expected_job: ActiveJob,
+    running_job: ActiveJob,
+) -> bool:
+    async with _get_user_lock(user_id):
+        session = await _load_conversation_session(user_id)
+        if not _active_job_matches(getattr(session, "active_job", None), expected_job):
+            return False
+        session.active_job = running_job
+        session.phase = ConversationPhase.running_job
+        await _save_conversation_session(user_id, session)
+        return True
+
+
+async def _complete_background_job(
+    user_id: str,
+    current_job: ActiveJob,
+    message_id: str,
+    skill: Skill,
+    result: ExecuteResult,
+) -> None:
+    async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
             return
@@ -718,7 +795,15 @@ async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str)
         _job_controller.mark_completed(session, current_job, observation={"kind": result.kind})
         await _reply_completion_followup(message_id, session)
         await _save_conversation_session(user_id, session)
-    except SkillExecutionError as exc:
+
+
+async def _handle_background_skill_error(
+    user_id: str,
+    current_job: ActiveJob,
+    message_id: str,
+    exc: SkillExecutionError,
+) -> None:
+    async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
             return
@@ -738,8 +823,15 @@ async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str)
         session.completed = False
         await reply_text(_client, message_id, _friendly_skill_error(exc))
         await _save_conversation_session(user_id, session)
-    except Exception as exc:
-        log.exception("[JOB] background worker failed")
+
+
+async def _handle_background_unexpected_error(
+    user_id: str,
+    current_job: ActiveJob,
+    message_id: str,
+    exc: Exception,
+) -> None:
+    async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
             return
@@ -749,30 +841,118 @@ async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str)
         await _save_conversation_session(user_id, session)
 
 
+async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str) -> None:
+    skill = get_registry().get(active_job.skill_name)
+    if skill is None:
+        log.error("[JOB] skill missing for background job: %s", active_job.skill_name)
+        return
+    current_job = active_job
+    try:
+        if isinstance(skill.api, PollBackend):
+            if current_job.status == "submitted":
+                backend_job_id = await submit_poll_job(skill, current_job.payload)
+                current_job = current_job.model_copy(update={"job_id": backend_job_id, "status": "running"})
+                if not await _persist_background_running_job(user_id, active_job, current_job):
+                    return
+            result = await poll_existing_job(skill, current_job.job_id)
+        else:
+            current_job = current_job.model_copy(update={"status": "running"})
+            result = await execute(skill, current_job.payload)
+
+        await _complete_background_job(user_id, current_job, message_id, skill, result)
+    except SkillExecutionError as exc:
+        await _handle_background_skill_error(user_id, current_job, message_id, exc)
+    except Exception as exc:
+        log.exception("[JOB] background worker failed")
+        await _handle_background_unexpected_error(user_id, current_job, message_id, exc)
+
+
 def _running_job_reply(intent: TurnIntent) -> str:
     if intent == TurnIntent.cancel:
-        return "这次生成已经开始，当前暂不支持取消后端任务。我会继续等待，完成后在这里回复。"
+        return _local_cancel_msg()
     if intent == TurnIntent.chitchat:
         return _response_composer().skill_chitchat(completed=False)
     if intent == TurnIntent.ask_status:
         return "还在生成中，完成后会在这里回复。"
     if intent == TurnIntent.continue_wait:
-        return "好的，我继续帮你等待这次生成，完成后会在这里回复。"
+        return _continue_wait_msg()
     return "我继续帮你等待这次生成，完成后会在这里回复。"
 
 
 def _timeout_running_job_reply(intent: TurnIntent) -> str:
-    if intent == TurnIntent.cancel:
-        return f"这次生成还没完成，当前暂不支持取消后端任务。\n\n{_timeout_options_msg()}"
     return _timeout_options_msg()
 
 
-async def _handle_running_job_turn(session, user_id: str, message_id: str, intent: TurnIntent) -> bool:
+async def _retry_timeout_job(session: ConversationSession, user_id: str, message_id: str, active_job: ActiveJob) -> bool:
+    skill = get_registry().get(active_job.skill_name)
+    if skill is None:
+        return False
+    payload = await _maybe_inject_cached_step1(dict(active_job.payload), user_id)
+    submission = await _begin_submit_job(session, user_id, message_id, skill, payload, "retry")
+    if submission is None:
+        return True
+    session.active_job = submission.active_job
+    session.phase = ConversationPhase.running_job
+    sync_legacy_fields(session)
+    await _store.save(user_id, session)
+    msg = "✅ 已开始重新生成，预计 30-60 秒，请稍候…"
+    await reply_text(_client, message_id, msg)
+    _append_history(session, "assistant", msg)
+    _start_background_worker(user_id, submission.active_job, message_id)
+    return True
+
+
+async def _handle_timeout_job_turn(
+    session: ConversationSession,
+    user_id: str,
+    message_id: str,
+    text: str,
+    intent: TurnIntent,
+    active_job: ActiveJob,
+) -> bool:
+    choice = _resolve_timeout_choice(text, intent)
+    if choice == "continue_wait":
+        resumed = _resume_timeout_job(session, active_job)
+        msg = _continue_wait_msg()
+        await reply_text(_client, message_id, msg)
+        _append_history(session, "assistant", msg)
+        await _store.save(user_id, session)
+        _start_background_worker(user_id, resumed, message_id)
+        return True
+    if choice == "retry":
+        return await _retry_timeout_job(session, user_id, message_id, active_job)
+    if choice == "modify":
+        _move_timeout_job_to_modify(session, active_job)
+        msg = _modify_prompt_msg()
+        await reply_text(_client, message_id, msg)
+        _append_history(session, "assistant", msg)
+        await _store.save(user_id, session)
+        return True
+    if choice == "cancel":
+        _mark_job_locally_cancelled(session, active_job)
+        msg = _local_cancel_msg()
+        await reply_text(_client, message_id, msg)
+        _append_history(session, "assistant", msg)
+        await _store.save(user_id, session)
+        return True
+
+    msg = _timeout_running_job_reply(intent)
+    await reply_text(_client, message_id, msg)
+    _append_history(session, "assistant", msg)
+    await _store.save(user_id, session)
+    return True
+
+
+async def _handle_running_job_turn(session, user_id: str, message_id: str, text: str, intent: TurnIntent) -> bool:
     active_job = _job_controller.recovery_candidate(session) if isinstance(session, ConversationSession) else None
     if active_job is None:
         return False
     if active_job.status == "timeout":
-        msg = _timeout_running_job_reply(intent)
+        return await _handle_timeout_job_turn(session, user_id, message_id, text, intent, active_job)
+
+    if intent == TurnIntent.cancel:
+        _mark_job_locally_cancelled(session, active_job)
+        msg = _local_cancel_msg()
         await reply_text(_client, message_id, msg)
         _append_history(session, "assistant", msg)
         await _store.save(user_id, session)
@@ -914,7 +1094,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     transition = _state_machine.transition(phase, turn.intent)
 
     if phase == ConversationPhase.running_job:
-        if await _handle_running_job_turn(session, user_id, message_id, turn.intent):
+        if await _handle_running_job_turn(session, user_id, message_id, text, turn.intent):
             return
 
     # Retry 快路径：session 已完成 + 用户说「再来一张」类短语 → 不进 LLM，直接重 submit
