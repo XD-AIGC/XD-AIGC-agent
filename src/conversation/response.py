@@ -43,6 +43,15 @@ class ResponseComposer:
     def local_cancel(self) -> str:
         return "我已停止等待这次结果，后续即使完成也不会再发送。"
 
+    def timeout_options(self) -> str:
+        return "生成还没完成。你可以：\n1. 继续等待\n2. 重试\n3. 修改信息\n4. 取消"
+
+    def continue_wait(self) -> str:
+        return "好的，我继续帮你等待这次生成，完成后会在这里回复。"
+
+    def modify_prompt(self) -> str:
+        return "你想修改哪里？请直接告诉我。"
+
     def render_options(self, option_set: OptionSet) -> str:
         return render_option_set(option_set)
 
