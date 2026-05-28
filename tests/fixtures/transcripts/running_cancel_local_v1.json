@@ -1,0 +1,49 @@
+{
+  "id": "running_cancel_local_v1",
+  "description": "running_job 中用户取消时，bot 只本地停止等待，不声称后端已取消。",
+  "requires_session_fields": ["active_job"],
+  "initial_session": {
+    "schema_version": 2,
+    "phase": "running_job",
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "completed": false,
+    "active_job": {
+      "job_id": "backend-job-existing",
+      "skill_name": "xd-poster-gen",
+      "action_name": "submit",
+      "payload": {
+        "topic": "coffee"
+      },
+      "source_message_id": "<MSG_OLD>",
+      "status": "running",
+      "started_at": 1779940000.0
+    }
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "取消",
+      "expect": {
+        "reply_text_contains": ["我已停止等待这次结果，后续即使完成也不会再发送。"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 0,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "phase": "completed",
+          "completed": true,
+          "active_job": {
+            "status": "cancelled",
+            "cancelled_locally": true
+          }
+        }
+      }
+    }
+  ]
+}

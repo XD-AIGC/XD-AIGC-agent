@@ -38,10 +38,13 @@ def test_transcript_fixtures_are_present_and_redacted():
         "numbered_character_choice_v1",
         "ratio_choice_v1",
         "restart_recovery_v1",
+        "running_cancel_local_v1",
         "running_chitchat_v1",
         "skill_action_trace_v1",
+        "timeout_cancel_local_v1",
+        "timeout_continue_wait_v1",
     }
-    assert len(FIXTURES) >= 8
+    assert len(FIXTURES) >= 11
     for fixture in FIXTURES:
         assert_fixture_is_redacted(fixture)
 

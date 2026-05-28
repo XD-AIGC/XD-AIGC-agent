@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from src.conversation.session import ActiveJob, CompletedResult, ConversationPhase, ConversationSession
+from src.conversation.response import ResponseComposer
 from src.skill.executor import ExecuteResult, SkillExecutionError
 from src.skill.schema import PollBackend, Skill, SkillOutput
 
@@ -177,8 +178,34 @@ async def test_running_job_cancel_acknowledges_cancel_intent(monkeypatch):
     await main_mod._agentic_loop("取消", session, "user-1", "msg-current")
 
     sent = reply_text.await_args_list[-1].args[2]
-    assert "暂不支持取消" in sent
-    assert "继续帮你等待" not in sent
+    assert sent == ResponseComposer().local_cancel()
+    assert store.session.phase == ConversationPhase.completed
+    assert store.session.completed is True
+    assert store.session.active_job.cancelled_locally is True
+    assert store.session.active_job.status == "cancelled"
+    start_worker.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_background_poll_discards_cancelled_local_job_result(monkeypatch):
+    from src import main as main_mod
+
+    active_job = _active_job("running")
+    cancelled = active_job.model_copy(update={"status": "cancelled", "cancelled_locally": True})
+    store = _FakeStore(_session(cancelled))
+    poll_existing_job = AsyncMock(return_value=ExecuteResult(kind="text", text="late result"))
+    reply_text = AsyncMock()
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "poll_existing_job", poll_existing_job)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": _skill()})
+
+    await main_mod._background_poll("user-1", active_job, "msg-source")
+
+    poll_existing_job.assert_awaited_once()
+    reply_text.assert_not_called()
+    assert store.session.active_job.cancelled_locally is True
 
 
 @pytest.mark.asyncio
@@ -221,6 +248,102 @@ async def test_timeout_running_job_does_not_restart_worker(monkeypatch):
     sent = reply_text.await_args_list[-1].args[2]
     assert "生成还没完成" in sent
     assert "1. 继续等待" in sent
+
+
+@pytest.mark.asyncio
+async def test_timeout_option_1_continue_wait_restarts_worker(monkeypatch):
+    from src import main as main_mod
+
+    session = _session(_active_job("timeout"))
+    store = _FakeStore(session)
+    reply_text = AsyncMock()
+    start_worker = Mock(return_value=True)
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
+
+    await main_mod._agentic_loop("1", session, "user-1", "msg-current")
+
+    sent = reply_text.await_args_list[-1].args[2]
+    assert "继续帮你等待" in sent
+    assert store.session.phase == ConversationPhase.running_job
+    assert store.session.active_job.status == "running"
+    start_worker.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_timeout_option_2_retry_resubmits_active_payload(monkeypatch):
+    from src import main as main_mod
+
+    new_job = _active_job("submitted").model_copy(update={"source_message_id": "msg-current"})
+    session = _session(_active_job("timeout"))
+    store = _FakeStore(session)
+    reply_text = AsyncMock()
+    begin_submit = AsyncMock(return_value=SimpleNamespace(active_job=new_job))
+    start_worker = Mock(return_value=True)
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "_begin_submit_job", begin_submit)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
+    monkeypatch.setattr(main_mod, "_maybe_inject_cached_step1", AsyncMock(side_effect=lambda payload, _user_id: payload))
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": _skill()})
+
+    await main_mod._agentic_loop("2", session, "user-1", "msg-current")
+
+    assert begin_submit.await_args.args[4] == {"topic": "coffee"}
+    assert begin_submit.await_args.args[5] == "retry"
+    sent = reply_text.await_args_list[-1].args[2]
+    assert "已开始重新生成" in sent
+    start_worker.assert_called_once_with("user-1", new_job, "msg-current")
+
+
+@pytest.mark.asyncio
+async def test_timeout_option_3_modify_moves_back_to_collecting(monkeypatch):
+    from src import main as main_mod
+
+    session = _session(_active_job("timeout"))
+    store = _FakeStore(session)
+    reply_text = AsyncMock()
+    start_worker = Mock(return_value=True)
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
+
+    await main_mod._agentic_loop("3", session, "user-1", "msg-current")
+
+    sent = reply_text.await_args_list[-1].args[2]
+    assert "想修改哪里" in sent
+    assert store.session.phase == ConversationPhase.collecting
+    assert store.session.completed is False
+    assert store.session.active_job is None
+    start_worker.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_timeout_option_4_cancel_marks_local_cancel(monkeypatch):
+    from src import main as main_mod
+
+    session = _session(_active_job("timeout"))
+    store = _FakeStore(session)
+    reply_text = AsyncMock()
+    start_worker = Mock(return_value=True)
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
+
+    await main_mod._agentic_loop("4", session, "user-1", "msg-current")
+
+    sent = reply_text.await_args_list[-1].args[2]
+    assert sent == ResponseComposer().local_cancel()
+    assert store.session.phase == ConversationPhase.completed
+    assert store.session.completed is True
+    assert store.session.active_job.cancelled_locally is True
+    assert store.session.active_job.status == "cancelled"
+    start_worker.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,59 @@
+{
+  "id": "timeout_continue_wait_v1",
+  "description": "timeout 菜单中回复 1 确定性映射到继续等待并恢复轮询。",
+  "requires_session_fields": ["active_job"],
+  "initial_session": {
+    "schema_version": 2,
+    "phase": "running_job",
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "completed": false,
+    "active_job": {
+      "job_id": "backend-job-existing",
+      "skill_name": "xd-poster-gen",
+      "action_name": "submit",
+      "payload": {
+        "topic": "coffee"
+      },
+      "source_message_id": "<MSG_OLD>",
+      "status": "timeout",
+      "started_at": 1779940000.0
+    }
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "1",
+      "execute_results": [
+        {
+          "kind": "text",
+          "text": "完成",
+          "metadata": {}
+        }
+      ],
+      "expect": {
+        "reply_text_contains": ["继续帮你等待", "完成", "已完成"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 0,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 3,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "phase": "completed",
+          "completed": true,
+          "active_job": {
+            "status": "completed",
+            "cancelled_locally": false
+          }
+        },
+        "v2_optional": {
+          "phase_transitions": ["running_job", "completed"]
+        }
+      }
+    }
+  ]
+}
