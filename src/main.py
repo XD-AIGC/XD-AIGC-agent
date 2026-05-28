@@ -23,12 +23,19 @@ from src.conversation.classifier import (
 from src.conversation.option_resolver import OptionResolver, build_resource_option_set
 from src.conversation.options import OptionSet
 from src.conversation.response import ResponseComposer
-from src.conversation.session import ConversationPhase, infer_phase_from_legacy_fields
+from src.conversation.session import (
+    ActiveJob,
+    CompletedResult,
+    ConversationPhase,
+    ConversationSession,
+    Message,
+    infer_phase_from_legacy_fields,
+)
 from src.conversation.state_machine import SideEffect, StateMachine
 from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
 from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
-from src.skill.executor import ExecuteResult, execute, poll_existing_job, SkillExecutionError
+from src.skill.executor import ExecuteResult, execute, poll_existing_job, SkillExecutionError, submit_poll_job
 from src.skill.job_controller import InvalidJobPayloadError, JobController, PayloadTooLargeError, StaleSessionError
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
@@ -38,9 +45,11 @@ import time
 
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
 _MAX_SKILL_ACTIONS_PER_TURN = 8  # 防 LLM 在单轮里无限调 skill action
+_MAX_AGENT_LOOP_ITERATIONS = 20
 
 # Per-user 串行化锁：同 user 的消息不并发处理，避免 submit 阻塞期间新消息进 LLM 瞎回
 _user_locks: dict[str, asyncio.Lock] = {}
+_background_tasks: dict[str, asyncio.Task] = {}
 _turn_classifier = TurnClassifier()
 _state_machine = StateMachine()
 
@@ -82,8 +91,11 @@ def _is_completed_skill_continuation(text: str) -> bool:
 
 def _last_assistant_message(session) -> str:
     for msg in reversed(session.chat_history):
-        if msg.get("role") == "assistant":
-            return msg.get("content") or ""
+        if isinstance(msg, dict):
+            if msg.get("role") == "assistant":
+                return msg.get("content") or ""
+        elif getattr(msg, "role", None) == "assistant":
+            return getattr(msg, "content", "") or ""
     return ""
 
 
@@ -266,7 +278,11 @@ def _append_history(session, role: str, content: str) -> None:
         return
     if len(content) > _HISTORY_MAX_CHAR:
         content = content[:_HISTORY_MAX_CHAR] + "...(truncated)"
-    session.chat_history.append({"role": role, "content": content})
+    item = Message(role=role, content=content) if isinstance(session, ConversationSession) else {
+        "role": role,
+        "content": content,
+    }
+    session.chat_history.append(item)
     # 只留最近 N 条
     if len(session.chat_history) > _HISTORY_MAX_TURNS:
         session.chat_history = session.chat_history[-_HISTORY_MAX_TURNS:]
@@ -594,6 +610,149 @@ async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill
     return submission
 
 
+def _background_task_key(user_id: str, active_job: ActiveJob) -> str:
+    return f"{user_id}:{active_job.source_message_id}:{active_job.skill_name}"
+
+
+def _start_background_worker(user_id: str, active_job: ActiveJob, message_id: str) -> bool:
+    key = _background_task_key(user_id, active_job)
+    existing = _background_tasks.get(key)
+    if existing is not None and not existing.done():
+        return False
+    task = asyncio.create_task(_background_poll(user_id, active_job, message_id))
+    _background_tasks[key] = task
+    task.add_done_callback(lambda _task: _background_tasks.pop(key, None))
+    return True
+
+
+async def _load_conversation_session(user_id: str) -> ConversationSession:
+    get_conversation = getattr(_store, "get_conversation", None)
+    if get_conversation is not None:
+        return await get_conversation(user_id)
+    return await _store.get(user_id)
+
+
+async def _save_conversation_session(user_id: str, session) -> None:
+    save_conversation = getattr(_store, "save_conversation", None)
+    if save_conversation is not None and isinstance(session, ConversationSession):
+        await save_conversation(user_id, session)
+        return
+    await _store.save(user_id, session)
+
+
+def _active_job_matches(current: ActiveJob | None, expected: ActiveJob) -> bool:
+    if current is None:
+        return False
+    return (
+        current.skill_name == expected.skill_name
+        and current.source_message_id == expected.source_message_id
+        and not current.cancelled_locally
+    )
+
+
+def _timeout_options_msg() -> str:
+    return "生成还没完成。你可以：\n1. 继续等待\n2. 重试\n3. 修改信息\n4. 取消"
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "timeout" in text or "超时" in text
+
+
+def _result_artifacts(result: ExecuteResult) -> dict:
+    artifacts = {"kind": result.kind}
+    if result.result_url:
+        artifacts["result_url"] = result.result_url
+    file_id = _extract_image_file_id(result.metadata)
+    if file_id:
+        artifacts["file_id"] = file_id
+    return artifacts
+
+
+async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str) -> None:
+    skill = get_registry().get(active_job.skill_name)
+    if skill is None:
+        log.error("[JOB] skill missing for background job: %s", active_job.skill_name)
+        return
+    current_job = active_job
+    try:
+        if isinstance(skill.api, PollBackend):
+            if current_job.status == "submitted":
+                backend_job_id = await submit_poll_job(skill, current_job.payload)
+                current_job = current_job.model_copy(update={"job_id": backend_job_id, "status": "running"})
+                session = await _load_conversation_session(user_id)
+                if not _active_job_matches(getattr(session, "active_job", None), active_job):
+                    return
+                session.active_job = current_job
+                session.phase = ConversationPhase.running_job
+                await _save_conversation_session(user_id, session)
+            result = await poll_existing_job(skill, current_job.job_id)
+        else:
+            current_job = current_job.model_copy(update={"status": "running"})
+            result = await execute(skill, current_job.payload)
+
+        session = await _load_conversation_session(user_id)
+        if not _active_job_matches(getattr(session, "active_job", None), current_job):
+            return
+        await _send_execute_result(message_id, result, skill)
+        await _maybe_save_cached_step1(current_job.payload, result, user_id)
+        session.pending_param = None
+        session.loaded_resources = {}
+        if isinstance(current_job.payload, dict):
+            session.collected_params.update(current_job.payload)
+        session.completed = True
+        session.completed_result = CompletedResult(
+            submitted_payload=current_job.payload,
+            artifacts=_result_artifacts(result),
+            completed_at=time.time(),
+            source_message_id=current_job.source_message_id,
+        )
+        _job_controller.mark_completed(session, current_job, observation={"kind": result.kind})
+        await _reply_completion_followup(message_id, session)
+        await _save_conversation_session(user_id, session)
+    except SkillExecutionError as exc:
+        session = await _load_conversation_session(user_id)
+        if not _active_job_matches(getattr(session, "active_job", None), current_job):
+            return
+        if _is_timeout_error(exc):
+            session.active_job = current_job.model_copy(
+                update={
+                    "status": "timeout",
+                    "last_poll_at": time.time(),
+                    "last_observation": {"error": str(exc)},
+                }
+            )
+            session.phase = ConversationPhase.running_job
+            await reply_text(_client, message_id, _timeout_options_msg())
+            await _save_conversation_session(user_id, session)
+            return
+        _job_controller.mark_failed(session, current_job, observation={"error": str(exc)})
+        session.completed = False
+        await reply_text(_client, message_id, _friendly_skill_error(exc))
+        await _save_conversation_session(user_id, session)
+    except Exception as exc:
+        log.exception("[JOB] background worker failed")
+        session = await _load_conversation_session(user_id)
+        if not _active_job_matches(getattr(session, "active_job", None), current_job):
+            return
+        _job_controller.mark_failed(session, current_job, observation={"error": str(exc)})
+        session.completed = False
+        await reply_text(_client, message_id, _friendly_skill_error(exc))
+        await _save_conversation_session(user_id, session)
+
+
+async def _handle_running_job_turn(session, user_id: str, message_id: str) -> bool:
+    active_job = _job_controller.recovery_candidate(session) if isinstance(session, ConversationSession) else None
+    if active_job is None:
+        return False
+    msg = "我继续帮你等待这次生成，完成后会在这里回复。"
+    await reply_text(_client, message_id, msg)
+    _start_background_worker(user_id, active_job, message_id)
+    _append_history(session, "assistant", msg)
+    await _store.save(user_id, session)
+    return True
+
+
 # 飞书群里 @mention 在 content.text 里渲染为 "@_user_N" 占位符
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+\s*")
 
@@ -678,7 +837,7 @@ async def _process(data) -> None:
 
 async def _process_locked(message_id: str, msg_type: str, content: dict, user_id: str) -> None:
     text, image_key = _normalize_message(msg_type, content)
-    session = await _store.get(user_id)
+    session = await _load_conversation_session(user_id)
 
     # 智能路径 1：用户一次性给了 text + image（典型场景：群里 @bot 配图说意图）
     if text and image_key:
@@ -721,6 +880,10 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     phase = _phase_for_session(session)
     transition = _state_machine.transition(phase, turn.intent)
 
+    if phase == ConversationPhase.running_job:
+        if await _handle_running_job_turn(session, user_id, message_id):
+            return
+
     # Retry 快路径：session 已完成 + 用户说「再来一张」类短语 → 不进 LLM，直接重 submit
     if (
         session.completed
@@ -736,24 +899,10 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             submission = await _begin_submit_job(session, user_id, message_id, skill, payload, "retry")
             if submission is None:
                 return
-            if isinstance(skill.api, PollBackend):
-                await reply_text(_client, message_id, "✅ 已开始重新生成，预计 30-60 秒，请稍候…")
-            try:
-                result = await execute(skill, payload)
-                await _reply_with_result(message_id, result)
-                await _maybe_save_cached_step1(payload, result, user_id)
-                _job_controller.mark_completed(session, submission.active_job, observation={"kind": result.kind})
-                await _reply_completion_followup(message_id, session)
-                # session.completed 保持 True，允许继续连续 retry
-                await _store.save(user_id, session)
-            except SkillExecutionError as e:
-                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
-                await reply_text(_client, message_id, _friendly_skill_error(e))
-                # 保留 session，用户可继续 retry 或 adjust
-            except Exception as e:
-                log.exception("retry submit failed")
-                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
-                await reply_text(_client, message_id, _friendly_skill_error(e))
+            session.completed = False
+            await _store.save(user_id, session)
+            await reply_text(_client, message_id, "✅ 已开始重新生成，预计 30-60 秒，请稍候…")
+            _start_background_worker(user_id, submission.active_job, message_id)
             return
 
     if session.completed and session.mode == "skill" and turn.intent == TurnIntent.ask_capability:
@@ -811,6 +960,11 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     iter_count = 0
     while True:
         iter_count += 1
+        if iter_count > _MAX_AGENT_LOOP_ITERATIONS:
+            log.warning("超过 %s 次 agent loop，回退", _MAX_AGENT_LOOP_ITERATIONS)
+            await reply_text(_client, message_id, "处理步骤过多，请重新描述需求或稍后再试。")
+            await _store.save(user_id, session)
+            return
         log.info(f"[LOOP iter={iter_count} mode={session.mode} skill={session.skill_name} text={current_text[:60]!r}]")
         try:
             if session.mode == "router":
@@ -821,6 +975,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                     log.error(f"skill {session.skill_name} 不存在，回 router")
                     session.mode = "router"
                     session.skill_name = None
+                    if isinstance(session, ConversationSession):
+                        session.phase = ConversationPhase.idle
                     await _store.save(user_id, session)
                     continue
                 action = await skill_decide(current_text, session, skill)
@@ -916,6 +1072,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
             if skill.system_prompt_core:
                 # 复杂 skill：进入 Skill Mode，让 skill_decide 主导对话
+                if isinstance(session, ConversationSession):
+                    session.phase = ConversationPhase.collecting
                 session.mode = "skill"
                 session.loaded_resources = {}
                 session.collected_params = {}
@@ -925,6 +1083,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 continue
             else:
                 # 简单 skill：保持旧行为（按 prompt_to_user 问第一个 param）
+                if isinstance(session, ConversationSession):
+                    session.phase = ConversationPhase.collecting
                 session.state = "collecting"  # 旧字段
                 first_param = next((p for p in skill.params if p.required), None)
                 if first_param:
@@ -967,6 +1127,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 session.pending_param = None
                 session.loaded_resources = {}
                 if obs.artifact.get("polled_to_completion"):
+                    if isinstance(session, ConversationSession):
+                        session.phase = ConversationPhase.completed
                     session.completed = True
                     await _reply_completion_followup(message_id, session)
                 await _store.save(user_id, session)
@@ -986,34 +1148,10 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             submission = await _begin_submit_job(session, user_id, message_id, skill, payload, "submit")
             if submission is None:
                 return
-            # 异步 skill 通常要 30-60s，先给用户一个"开始生成"信号
-            if isinstance(skill.api, PollBackend):
-                await reply_text(_client, message_id, "✅ 已开始生成，预计 30-60 秒，请稍候…")
-            try:
-                result = await execute(skill, payload)
-                await _reply_with_result(message_id, result)
-                await _maybe_save_cached_step1(payload, result, user_id)
-                _job_controller.mark_completed(session, submission.active_job, observation={"kind": result.kind})
-                # 保留 session（同一 skill 下用户可能想「再来一张」「换个标题」）
-                # 清掉 pending_param 和 loaded_resources 节省 token，但保留 skill_name + collected_params
-                session.pending_param = None
-                session.loaded_resources = {}
-                # 把上次提交的 payload 也存进 collected_params，让下轮 LLM 看到
-                if isinstance(payload, dict):
-                    session.collected_params.update(payload)
-                session.completed = True  # 触发 retry 快路径 + LLM completed 引导
-                await _reply_completion_followup(message_id, session)
-                await _store.save(user_id, session)
-            except SkillExecutionError as e:
-                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
-                await reply_text(_client, message_id, _friendly_skill_error(e))
-                # 保留 session 让用户能 retry / adjust，不 clear
-                await _store.save(user_id, session)
-            except Exception as e:
-                log.exception("submit failed")
-                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
-                await reply_text(_client, message_id, _friendly_skill_error(e))
-                await _store.save(user_id, session)
+            session.completed = False
+            await _store.save(user_id, session)
+            await reply_text(_client, message_id, "✅ 已开始生成，预计 30-60 秒，请稍候…")
+            _start_background_worker(user_id, submission.active_job, message_id)
             return
 
         log.warning(f"未处理的 action: {action.action}")

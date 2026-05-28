@@ -37,7 +37,7 @@ def test_transcript_fixtures_are_present_and_redacted():
         "confirmation_submit_v1",
         "numbered_character_choice_v1",
         "ratio_choice_v1",
-        "restart_recovery_placeholder_xfail",
+        "restart_recovery_v1",
         "running_chitchat_v1",
         "skill_action_trace_v1",
     }

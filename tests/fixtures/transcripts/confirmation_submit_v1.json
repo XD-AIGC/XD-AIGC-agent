@@ -1,6 +1,6 @@
 {
   "id": "confirmation_submit_v1",
-  "description": "用户确认后进入 submit 路径；当前 v1 会同步执行 execute 并发送完成收尾。",
+  "description": "用户确认后进入 submit 路径；P2b 会先 ack，再由 background worker delayed reply 完成收尾。",
   "initial_session": {
     "mode": "skill",
     "skill_name": "xd-poster-gen",
@@ -46,7 +46,7 @@
               "ratio": "3:2"
             }
           ],
-          "execute_calls": 1,
+          "execute_calls": 0,
           "reply_text_calls": 3,
           "reply_image_calls": 0
         },
@@ -56,7 +56,7 @@
           "completed": true
         },
         "v2_optional": {
-          "phase_transitions": ["running_job", "completed"]
+          "phase_transitions": ["running_job", "running_job", "completed"]
         }
       }
     }

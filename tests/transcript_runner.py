@@ -7,6 +7,7 @@ observed conversation failures before the v2 state/session work exists.
 from __future__ import annotations
 
 import json
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from unittest.mock import AsyncMock
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.conversation.session import load_session
 from src.orchestrator.schema import BotAction, UserSession
 from src.skill.actions import SkillActionObservation
 from src.skill.executor import ExecuteResult
@@ -92,10 +94,10 @@ async def run_transcript_fixture(fixture: TranscriptFixture, monkeypatch) -> Non
     """Replay one text-only fixture against the current v1 agent loop."""
     from src import main as main_mod
 
-    session = UserSession.model_validate(fixture.initial_session)
+    session = load_session(fixture.initial_session)
     _assert_required_session_fields(fixture, session)
 
-    store = _FakeStore()
+    store = _FakeStore(session)
     registry = _fake_registry(session.skill_name or "xd-poster-gen")
 
     reply_text = AsyncMock()
@@ -104,6 +106,8 @@ async def run_transcript_fixture(fixture: TranscriptFixture, monkeypatch) -> Non
     skill_decide = AsyncMock()
     execute_skill_action = AsyncMock()
     execute = AsyncMock()
+    submit_poll_job = AsyncMock(return_value="backend-job-fixture")
+    poll_existing_job = AsyncMock()
     send_skill_artifact = AsyncMock()
     send_file_id_image = AsyncMock(return_value=None)
     download_url = AsyncMock(return_value=b"image-bytes")
@@ -116,6 +120,8 @@ async def run_transcript_fixture(fixture: TranscriptFixture, monkeypatch) -> Non
     monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
     monkeypatch.setattr(main_mod, "execute_skill_action", execute_skill_action)
     monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "submit_poll_job", submit_poll_job)
+    monkeypatch.setattr(main_mod, "poll_existing_job", poll_existing_job)
     monkeypatch.setattr(main_mod, "get_registry", lambda: registry)
     monkeypatch.setattr(main_mod, "_maybe_inject_cached_step1", _identity_payload)
     monkeypatch.setattr(main_mod, "_send_skill_action_artifact", send_skill_artifact)
@@ -128,21 +134,51 @@ async def run_transcript_fixture(fixture: TranscriptFixture, monkeypatch) -> Non
         skill_decide.side_effect = _actions(turn.skill_actions)
         execute_skill_action.side_effect = _skill_action_results(turn.skill_action_results)
         execute.side_effect = _execute_results(turn.execute_results)
+        submit_poll_job.reset_mock()
+        poll_existing_job.side_effect = _execute_results(turn.execute_results)
 
-        before = _trace_snapshot(router_decide, skill_decide, execute_skill_action, execute, reply_text, reply_image, store)
+        before = _trace_snapshot(
+            router_decide,
+            skill_decide,
+            execute_skill_action,
+            execute,
+            submit_poll_job,
+            reply_text,
+            reply_image,
+            store,
+        )
         await main_mod._agentic_loop(turn.text, session, "fixture-user", turn.message_id)
-        after = _trace_snapshot(router_decide, skill_decide, execute_skill_action, execute, reply_text, reply_image, store)
+        await _drain_background_tasks(main_mod)
+        after = _trace_snapshot(
+            router_decide,
+            skill_decide,
+            execute_skill_action,
+            execute,
+            submit_poll_job,
+            reply_text,
+            reply_image,
+            store,
+        )
         delta = _trace_delta(before, after)
 
         _assert_turn_expectations(turn.expect, session, delta, reply_text, reply_image)
 
 
 class _FakeStore:
-    def __init__(self) -> None:
+    def __init__(self, session: UserSession) -> None:
+        self.session = session
         self.saved: list[UserSession] = []
         self.cleared = False
 
     async def save(self, _user_id: str, session: UserSession) -> None:
+        self.session = session
+        self.saved.append(session.model_copy(deep=True))
+
+    async def get_conversation(self, _user_id: str):
+        return self.session
+
+    async def save_conversation(self, _user_id: str, session):
+        self.session = session
         self.saved.append(session.model_copy(deep=True))
 
     async def clear(self, _user_id: str) -> None:
@@ -186,6 +222,7 @@ def _trace_snapshot(
     skill_decide: AsyncMock,
     execute_skill_action: AsyncMock,
     execute: AsyncMock,
+    submit_poll_job: AsyncMock,
     reply_text: AsyncMock,
     reply_image: AsyncMock,
     store: _FakeStore,
@@ -195,13 +232,19 @@ def _trace_snapshot(
         "skill_llm_calls": skill_decide.await_count,
         "skill_action_calls": execute_skill_action.await_count,
         "skill_action_names": [call.args[1] for call in execute_skill_action.await_args_list],
-        "submit_job_calls": execute.await_count,
-        "submit_payloads": [call.args[1] for call in execute.await_args_list],
+        "submit_job_calls": submit_poll_job.await_count,
+        "submit_payloads": [call.args[1] for call in submit_poll_job.await_args_list],
         "execute_calls": execute.await_count,
         "reply_text_calls": reply_text.await_count,
         "reply_image_calls": reply_image.await_count,
         "phase_transitions": _phase_transitions(store.saved),
     }
+
+
+async def _drain_background_tasks(main_mod) -> None:
+    tasks = list(main_mod._background_tasks.values())
+    if tasks:
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
 
 
 def _trace_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:

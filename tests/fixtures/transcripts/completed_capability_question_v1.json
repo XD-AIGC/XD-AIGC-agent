@@ -31,8 +31,7 @@
           "completed": true
         },
         "v2_optional": {
-          "phase": "completed",
-          "last_processed_message_ids_contains": "<MSG_1>"
+          "phase": "completed"
         }
       }
     }

@@ -777,7 +777,7 @@ async def test_ask_param_with_updated_value_continues_without_reasking(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_submit_sends_completion_followup(monkeypatch):
+async def test_submit_acknowledges_background_job(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession
     from src.orchestrator.schema import BotAction
@@ -796,6 +796,7 @@ async def test_submit_sends_completion_followup(monkeypatch):
     reply_text = AsyncMock()
     skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"topic": "coffee"}))
     execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    start_worker = Mock(return_value=True)
     fake_skill = Skill(
         name="xd-poster-gen",
         description="生成海报",
@@ -808,6 +809,7 @@ async def test_submit_sends_completion_followup(monkeypatch):
     monkeypatch.setattr(main_mod, "reply_text", reply_text)
     monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
     monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
     monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
     monkeypatch.setattr(
         main_mod,
@@ -820,9 +822,11 @@ async def test_submit_sends_completion_followup(monkeypatch):
     await main_mod._agentic_loop("生成海报", session, "user-1", "msg-1")
 
     sent = [call.args[2] for call in reply_text.call_args_list]
-    assert sent == ["done", "已完成。要继续这个任务、调整哪里，还是换别的需求？"]
+    assert sent == ["✅ 已开始生成，预计 30-60 秒，请稍候…"]
+    execute.assert_not_called()
+    start_worker.assert_called_once()
     assert store.saved[0] == "user-1"
-    assert session.completed is True
+    assert session.completed is False
 
 
 @pytest.mark.asyncio
