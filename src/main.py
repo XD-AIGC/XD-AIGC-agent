@@ -38,6 +38,7 @@ from src.session.step1_cache import Step1Cache
 from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
 from src.skill.executor import ExecuteResult, execute, poll_existing_job, SkillExecutionError, submit_poll_job
 from src.skill.job_controller import InvalidJobPayloadError, JobController, PayloadTooLargeError, StaleSessionError
+from src.skill.provenance import filter_updated_params
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
@@ -1206,7 +1207,17 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
         # 应用 LLM 声明的 updated_params
         if isinstance(action.updated_params, dict) and action.updated_params:
-            session.collected_params.update(action.updated_params)
+            skill = get_registry().get(session.skill_name) if session.skill_name else None
+            accepted_updates, rejected_updates = filter_updated_params(
+                action.updated_params,
+                session=session,
+                skill=skill,
+                user_text=current_text,
+            )
+            if rejected_updates:
+                log.warning("[PROVENANCE] rejected updated_params=%s", rejected_updates)
+            if accepted_updates:
+                session.collected_params.update(accepted_updates)
 
         # 自动 continue：lazy load 资源后再问 LLM
         if action.action in ("lookup_characters", "lookup_options"):
