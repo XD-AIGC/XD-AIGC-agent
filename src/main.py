@@ -1201,7 +1201,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             # session 保留，用户可以直接重发
             return
         log.info(
-            f"[ACT mode={session.mode}] {action.action} skill={action.skill_name} "
+            f"[ACT mode={session.mode}] {action.action} skill={getattr(action, 'skill_name', None)} "
             f"param_name={action.param_name} action_name={action.action_name} updated={action.updated_params}"
         )
 
@@ -1267,6 +1267,18 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         if action.action == "exit_skill":
             await reply_text(_client, message_id, action.message or "好的，需要其他帮助随时叫我。")
             await _store.clear(user_id)
+            return
+
+        if action.action == "complete":
+            if isinstance(session, ConversationSession):
+                session.phase = ConversationPhase.completed
+            session.pending_param = None
+            session.loaded_resources = {}
+            session.completed = True
+            msg = action.message or _completion_followup_msg()
+            await reply_text(_client, message_id, msg)
+            _append_history(session, "assistant", msg)
+            await _store.save(user_id, session)
             return
 
         if action.action == "ask_param":
