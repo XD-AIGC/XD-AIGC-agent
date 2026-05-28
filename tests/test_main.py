@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -780,6 +781,7 @@ async def test_submit_sends_completion_followup(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession
     from src.orchestrator.schema import BotAction
+    from src.skill.job_controller import JobController
     from src.skill.executor import ExecuteResult
     from src.skill.schema import Skill, HttpBackend, SkillOutput
 
@@ -807,6 +809,11 @@ async def test_submit_sends_completion_followup(monkeypatch):
     monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
     monkeypatch.setattr(main_mod, "execute", execute)
     monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+    monkeypatch.setattr(
+        main_mod,
+        "_job_controller",
+        JobController(redis=None, now=lambda: 100.0, job_id_factory=lambda: "job-1"),
+    )
 
     session = UserSession(mode="skill", skill_name="xd-poster-gen")
 
@@ -816,3 +823,124 @@ async def test_submit_sends_completion_followup(monkeypatch):
     assert sent == ["done", "已完成。要继续这个任务、调整哪里，还是换别的需求？"]
     assert store.saved[0] == "user-1"
     assert session.completed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("submitted", "还在生成中"),
+        ("running", "还在生成中"),
+        ("timeout", "还在生成中"),
+        ("completed", "已经完成过"),
+        ("failed", "上次提交失败"),
+    ],
+)
+async def test_submit_duplicate_job_status_message_does_not_execute(monkeypatch, status, expected):
+    from src import main as main_mod
+    from src.conversation.session import ActiveJob
+    from src.orchestrator.schema import BotAction, UserSession
+    from src.skill.executor import ExecuteResult
+    from src.skill.job_controller import SubmitJobResult
+    from src.skill.schema import Skill, HttpBackend, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    class DuplicateJobController:
+        async def begin_submit(self, *args, **kwargs):
+            return SubmitJobResult(
+                active_job=ActiveJob(
+                    job_id="job-existing",
+                    skill_name="xd-poster-gen",
+                    action_name="submit",
+                    payload={"topic": "coffee"},
+                    source_message_id="msg-1",
+                    status=status,
+                    started_at=90.0,
+                ),
+                created=False,
+                duplicate=True,
+            )
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"topic": "coffee"}))
+    execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_job_controller", DuplicateJobController())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+
+    await main_mod._agentic_loop("生成海报", session, "user-1", "msg-1")
+
+    execute.assert_not_called()
+    reply_text.assert_called_once()
+    assert expected in reply_text.call_args[0][2]
+    assert store.saved[0] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_submit_payload_rejection_logs_internal_detail(monkeypatch, caplog):
+    from src import main as main_mod
+    from src.orchestrator.schema import BotAction, UserSession
+    from src.skill.executor import ExecuteResult
+    from src.skill.job_controller import InvalidJobPayloadError
+    from src.skill.schema import Skill, HttpBackend, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    class RejectingJobController:
+        async def begin_submit(self, *args, **kwargs):
+            raise InvalidJobPayloadError("$.image_base64 looks like base64 content")
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"image_base64": "bad"}))
+    execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_job_controller", RejectingJobController())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+
+    with caplog.at_level(logging.WARNING, logger="src.main"):
+        await main_mod._agentic_loop("生成海报", session, "user-1", "msg-1")
+
+    execute.assert_not_called()
+    reply_text.assert_called_once()
+    assert "不能保存到任务状态" in reply_text.call_args[0][2]
+    assert "payload rejected" in caplog.text
+    assert "$.image_base64" in caplog.text

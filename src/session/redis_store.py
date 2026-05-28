@@ -10,6 +10,10 @@ class SessionStore:
     def __init__(self) -> None:
         self._redis = aioredis.from_url(REDIS_URL)
 
+    @property
+    def redis(self):
+        return self._redis
+
     def _key(self, user_id: str) -> str:
         return f"session:{user_id}"
 

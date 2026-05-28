@@ -29,6 +29,7 @@ from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
 from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
 from src.skill.executor import ExecuteResult, execute, poll_existing_job, SkillExecutionError
+from src.skill.job_controller import InvalidJobPayloadError, JobController, PayloadTooLargeError, StaleSessionError
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
@@ -499,6 +500,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 _store = SessionStore()
+_job_controller = JobController(redis_getter=lambda: getattr(_store, "redis", None))
 _step1_cache = Step1Cache()
 _client = build_client()
 
@@ -540,6 +542,56 @@ async def _reply_completion_followup(message_id: str, session) -> None:
     msg = _completion_followup_msg()
     await reply_text(_client, message_id, msg)
     _append_history(session, "assistant", msg)
+
+
+def _job_payload_error_message(exc: InvalidJobPayloadError) -> str:
+    if isinstance(exc, PayloadTooLargeError):
+        return "⚠️ 提交内容太大，不能安全保存任务状态。请改用 fileId/public_id 这类引用后再提交。"
+    return "⚠️ 提交内容包含不能保存到任务状态里的数据。请改用 fileId/public_id，避免 bytes/base64/signed URL。"
+
+
+def _duplicate_submit_message(active_job) -> str:
+    status = getattr(active_job, "status", None)
+    if status in {"submitted", "running", "timeout"}:
+        return "这条请求已经提交过，还在生成中，请稍候。"
+    if status == "completed":
+        return "这条请求已经完成过。要生成新一张，请说「再来一张」。"
+    if status == "failed":
+        return "这条请求上次提交失败了。你可以调整信息后再试一次。"
+    return "这条请求已经提交过，我不会重复生成。"
+
+
+async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill, payload: dict, action_name: str):
+    try:
+        submission = await _job_controller.begin_submit(
+            session,
+            user_id=user_id,
+            skill_name=skill.name,
+            action_name=action_name,
+            payload=payload,
+            source_message_id=message_id,
+            expected_updated_at=getattr(session, "updated_at", None),
+        )
+    except StaleSessionError:
+        msg = "状态刚刚发生变化，请重新回复「确认」提交。"
+        await reply_text(_client, message_id, msg)
+        _append_history(session, "assistant", msg)
+        await _store.save(user_id, session)
+        return None
+    except InvalidJobPayloadError as exc:
+        log.warning("[JOB] payload rejected: %s", exc)
+        msg = _job_payload_error_message(exc)
+        await reply_text(_client, message_id, msg)
+        _append_history(session, "assistant", msg)
+        await _store.save(user_id, session)
+        return None
+    if submission.duplicate:
+        msg = _duplicate_submit_message(submission.active_job)
+        await reply_text(_client, message_id, msg)
+        _append_history(session, "assistant", msg)
+        await _store.save(user_id, session)
+        return None
+    return submission
 
 
 # 飞书群里 @mention 在 content.text 里渲染为 "@_user_N" 占位符
@@ -681,20 +733,26 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         if skill is not None:
             log.info(f"[RETRY] skill={session.skill_name} payload_keys={list(session.collected_params.keys())}")
             payload = await _maybe_inject_cached_step1(dict(session.collected_params), user_id)
+            submission = await _begin_submit_job(session, user_id, message_id, skill, payload, "retry")
+            if submission is None:
+                return
             if isinstance(skill.api, PollBackend):
                 await reply_text(_client, message_id, "✅ 已开始重新生成，预计 30-60 秒，请稍候…")
             try:
                 result = await execute(skill, payload)
                 await _reply_with_result(message_id, result)
                 await _maybe_save_cached_step1(payload, result, user_id)
+                _job_controller.mark_completed(session, submission.active_job, observation={"kind": result.kind})
                 await _reply_completion_followup(message_id, session)
                 # session.completed 保持 True，允许继续连续 retry
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
+                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
                 await reply_text(_client, message_id, _friendly_skill_error(e))
                 # 保留 session，用户可继续 retry 或 adjust
             except Exception as e:
                 log.exception("retry submit failed")
+                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
                 await reply_text(_client, message_id, _friendly_skill_error(e))
             return
 
@@ -925,6 +983,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             skill = get_registry().get(session.skill_name)
             payload = action.submit_payload or session.collected_params
             payload = await _maybe_inject_cached_step1(dict(payload) if isinstance(payload, dict) else payload, user_id)
+            submission = await _begin_submit_job(session, user_id, message_id, skill, payload, "submit")
+            if submission is None:
+                return
             # 异步 skill 通常要 30-60s，先给用户一个"开始生成"信号
             if isinstance(skill.api, PollBackend):
                 await reply_text(_client, message_id, "✅ 已开始生成，预计 30-60 秒，请稍候…")
@@ -932,6 +993,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 result = await execute(skill, payload)
                 await _reply_with_result(message_id, result)
                 await _maybe_save_cached_step1(payload, result, user_id)
+                _job_controller.mark_completed(session, submission.active_job, observation={"kind": result.kind})
                 # 保留 session（同一 skill 下用户可能想「再来一张」「换个标题」）
                 # 清掉 pending_param 和 loaded_resources 节省 token，但保留 skill_name + collected_params
                 session.pending_param = None
@@ -943,11 +1005,13 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 await _reply_completion_followup(message_id, session)
                 await _store.save(user_id, session)
             except SkillExecutionError as e:
+                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
                 await reply_text(_client, message_id, _friendly_skill_error(e))
                 # 保留 session 让用户能 retry / adjust，不 clear
                 await _store.save(user_id, session)
             except Exception as e:
                 log.exception("submit failed")
+                _job_controller.mark_failed(session, submission.active_job, observation={"error": str(e)})
                 await reply_text(_client, message_id, _friendly_skill_error(e))
                 await _store.save(user_id, session)
             return
