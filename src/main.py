@@ -691,6 +691,46 @@ def _retry_payload(session) -> dict:
     return dict(getattr(session, "collected_params", {}) or {})
 
 
+def _mark_skill_complete(session, message_id: str) -> None:
+    session.pending_param = None
+    session.loaded_resources = {}
+    if isinstance(session, ConversationSession):
+        session.phase = ConversationPhase.completed
+        session.last_options = None
+        session.completed_result = CompletedResult(
+            submitted_payload=dict(session.collected_params),
+            artifacts=dict(session.artifacts),
+            completed_at=time.time(),
+            source_message_id=message_id,
+        )
+        sync_legacy_fields(session)
+    else:
+        session.completed = True
+        if hasattr(session, "last_options"):
+            session.last_options = None
+
+
+def _exit_skill_context(session) -> None:
+    session.skill_name = None
+    session.initial_intent = None
+    session.collected_params = {}
+    session.pending_param = None
+    session.loaded_resources = {}
+    if isinstance(session, ConversationSession):
+        session.phase = ConversationPhase.idle
+        session.last_options = None
+        session.active_job = None
+        session.artifacts = {}
+        session.completed_result = None
+        sync_legacy_fields(session)
+    else:
+        session.mode = "router"
+        session.completed = False
+        session.state = "idle"
+        if hasattr(session, "last_options"):
+            session.last_options = None
+
+
 def _mark_job_locally_cancelled(session: ConversationSession, active_job: ActiveJob) -> ActiveJob:
     cancelled = active_job.model_copy(
         update={
@@ -1200,8 +1240,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             await reply_text(_client, message_id, f"⚠️ AI 暂时不可用（{type(e).__name__}），稍后再试一次。")
             # session 保留，用户可以直接重发
             return
+        action_skill_name = getattr(action, "skill_name", None) or getattr(session, "skill_name", None)
         log.info(
-            f"[ACT mode={session.mode}] {action.action} skill={getattr(action, 'skill_name', None)} "
+            f"[ACT mode={session.mode}] {action.action} skill={action_skill_name} "
             f"param_name={action.param_name} action_name={action.action_name} updated={action.updated_params}"
         )
 
@@ -1265,16 +1306,15 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             return
 
         if action.action == "exit_skill":
-            await reply_text(_client, message_id, action.message or "好的，需要其他帮助随时叫我。")
-            await _store.clear(user_id)
+            msg = action.message or "好的，需要其他帮助随时叫我。"
+            await reply_text(_client, message_id, msg)
+            _append_history(session, "assistant", msg)
+            _exit_skill_context(session)
+            await _store.save(user_id, session)
             return
 
         if action.action == "complete":
-            if isinstance(session, ConversationSession):
-                session.phase = ConversationPhase.completed
-            session.pending_param = None
-            session.loaded_resources = {}
-            session.completed = True
+            _mark_skill_complete(session, message_id)
             msg = action.message or _completion_followup_msg()
             await reply_text(_client, message_id, msg)
             _append_history(session, "assistant", msg)
