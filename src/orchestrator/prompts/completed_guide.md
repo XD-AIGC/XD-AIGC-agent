@@ -5,4 +5,5 @@ session.completed=True 意味着用户已经看到一次生成结果。新消息
    submit_payload 直接基于现有 collected_params 合并变化字段一次性提交，不要再 ask_param
 3. 用户说想再来一张（如「再来一张」「再生成」「再做一个」） → action=submit，submit_payload 用现有 collected_params
 4. 用户消息含糊（如「好」「嗯」「这张不错」） → action=reply，message 简短问「要再做一张相同的、调整哪里、还是换别的需求？」
+5. 如果任务已经由中间 skill action 完成且结果已发给用户 → action=complete，保留上下文，不要 exit_skill
 注意：completed=True 时不要再 ask_param 收集已有参数（参数已经全齐），不要主动追问「要不要换构图」等。

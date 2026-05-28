@@ -13,6 +13,7 @@ from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from src.orchestrator.schema import BotAction, UserSession
 from src.skill.actions import format_action_catalog
 from src.skill.registry import get_registry
+from src.skill.runtime import SkillRuntimeAction
 from src.skill.schema import Skill
 
 _client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
@@ -66,7 +67,7 @@ async def router_decide(user_message: str, session: UserSession) -> BotAction:
     return resp.choices[0].message.parsed
 
 
-async def skill_decide(user_message: str, session: UserSession, skill: Skill) -> BotAction:
+async def skill_decide(user_message: str, session: UserSession, skill: Skill) -> SkillRuntimeAction:
     sys_prompt = _SKILL_SYSTEM.format(
         skill_name=skill.name,
         skill_description=skill.description,
@@ -94,7 +95,7 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
     resp = await _client.beta.chat.completions.parse(
         model=LLM_MODEL,
         messages=messages,
-        response_format=BotAction,
+        response_format=SkillRuntimeAction,
     )
     return resp.choices[0].message.parsed
 
