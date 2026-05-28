@@ -1,9 +1,6 @@
 {
   "id": "billbill_provenance_xfail",
-  "description": "xfail：当前 v1 会接受 LLM 把已确认 value 从 bill 扩写成 billbill；P3 provenance 应拒绝。",
-  "xfail": {
-    "reason": "依赖 P3 value provenance 校验"
-  },
+  "description": "P3 provenance：拒绝 LLM 把已确认 value 从 bill 扩写成 billbill。",
   "initial_session": {
     "mode": "skill",
     "skill_name": "xd-poster-gen",
