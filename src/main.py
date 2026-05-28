@@ -753,28 +753,29 @@ def _resolve_timeout_choice(text: str, intent: TurnIntent) -> str | None:
     return None
 
 
-async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str) -> None:
-    skill = get_registry().get(active_job.skill_name)
-    if skill is None:
-        log.error("[JOB] skill missing for background job: %s", active_job.skill_name)
-        return
-    current_job = active_job
-    try:
-        if isinstance(skill.api, PollBackend):
-            if current_job.status == "submitted":
-                backend_job_id = await submit_poll_job(skill, current_job.payload)
-                current_job = current_job.model_copy(update={"job_id": backend_job_id, "status": "running"})
-                session = await _load_conversation_session(user_id)
-                if not _active_job_matches(getattr(session, "active_job", None), active_job):
-                    return
-                session.active_job = current_job
-                session.phase = ConversationPhase.running_job
-                await _save_conversation_session(user_id, session)
-            result = await poll_existing_job(skill, current_job.job_id)
-        else:
-            current_job = current_job.model_copy(update={"status": "running"})
-            result = await execute(skill, current_job.payload)
+async def _persist_background_running_job(
+    user_id: str,
+    expected_job: ActiveJob,
+    running_job: ActiveJob,
+) -> bool:
+    async with _get_user_lock(user_id):
+        session = await _load_conversation_session(user_id)
+        if not _active_job_matches(getattr(session, "active_job", None), expected_job):
+            return False
+        session.active_job = running_job
+        session.phase = ConversationPhase.running_job
+        await _save_conversation_session(user_id, session)
+        return True
 
+
+async def _complete_background_job(
+    user_id: str,
+    current_job: ActiveJob,
+    message_id: str,
+    skill: Skill,
+    result: ExecuteResult,
+) -> None:
+    async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
             return
@@ -794,7 +795,15 @@ async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str)
         _job_controller.mark_completed(session, current_job, observation={"kind": result.kind})
         await _reply_completion_followup(message_id, session)
         await _save_conversation_session(user_id, session)
-    except SkillExecutionError as exc:
+
+
+async def _handle_background_skill_error(
+    user_id: str,
+    current_job: ActiveJob,
+    message_id: str,
+    exc: SkillExecutionError,
+) -> None:
+    async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
             return
@@ -814,8 +823,15 @@ async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str)
         session.completed = False
         await reply_text(_client, message_id, _friendly_skill_error(exc))
         await _save_conversation_session(user_id, session)
-    except Exception as exc:
-        log.exception("[JOB] background worker failed")
+
+
+async def _handle_background_unexpected_error(
+    user_id: str,
+    current_job: ActiveJob,
+    message_id: str,
+    exc: Exception,
+) -> None:
+    async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
             return
@@ -823,6 +839,32 @@ async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str)
         session.completed = False
         await reply_text(_client, message_id, _friendly_skill_error(exc))
         await _save_conversation_session(user_id, session)
+
+
+async def _background_poll(user_id: str, active_job: ActiveJob, message_id: str) -> None:
+    skill = get_registry().get(active_job.skill_name)
+    if skill is None:
+        log.error("[JOB] skill missing for background job: %s", active_job.skill_name)
+        return
+    current_job = active_job
+    try:
+        if isinstance(skill.api, PollBackend):
+            if current_job.status == "submitted":
+                backend_job_id = await submit_poll_job(skill, current_job.payload)
+                current_job = current_job.model_copy(update={"job_id": backend_job_id, "status": "running"})
+                if not await _persist_background_running_job(user_id, active_job, current_job):
+                    return
+            result = await poll_existing_job(skill, current_job.job_id)
+        else:
+            current_job = current_job.model_copy(update={"status": "running"})
+            result = await execute(skill, current_job.payload)
+
+        await _complete_background_job(user_id, current_job, message_id, skill, result)
+    except SkillExecutionError as exc:
+        await _handle_background_skill_error(user_id, current_job, message_id, exc)
+    except Exception as exc:
+        log.exception("[JOB] background worker failed")
+        await _handle_background_unexpected_error(user_id, current_job, message_id, exc)
 
 
 def _running_job_reply(intent: TurnIntent) -> str:
