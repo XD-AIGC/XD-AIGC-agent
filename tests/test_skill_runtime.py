@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 from pydantic import ValidationError
 
@@ -71,3 +73,55 @@ async def test_skill_decide_uses_skill_runtime_action_schema(monkeypatch):
 
     assert captured["response_format"] is SkillRuntimeAction
     assert isinstance(action, SkillRuntimeAction)
+
+
+@pytest.mark.asyncio
+async def test_complete_action_retains_skill_context(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
+    from src.skill.runtime import SkillRuntimeAction
+    from src.skill.schema import HttpBackend, Skill, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session.model_copy(deep=True))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(
+        main_mod,
+        "skill_decide",
+        AsyncMock(return_value=SkillRuntimeAction(action="complete", message="已完成")),
+    )
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = ConversationSession(
+        phase=ConversationPhase.collecting,
+        mode="skill",
+        skill_name="xd-poster-gen",
+        collected_params={"topic": "coffee"},
+    )
+
+    await main_mod._agentic_loop("完成了", session, "user-1", "msg-1")
+
+    assert reply_text.call_args.args[2] == "已完成"
+    assert store.saved[0] == "user-1"
+    saved = store.saved[1]
+    assert saved.phase == ConversationPhase.completed
+    assert saved.completed is True
+    assert saved.skill_name == "xd-poster-gen"
+    assert saved.collected_params == {"topic": "coffee"}
