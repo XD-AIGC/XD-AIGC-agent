@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 import os
 
-from src.runtime_rollout import RuntimeRolloutConfig
+from src.runtime_dry_run import RuntimeDryRunConfig
 
 load_dotenv()
 
@@ -15,7 +15,7 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "dummy")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 TOOLBOX_BASE_URL = os.environ.get("TOOLBOX_BASE_URL", "http://localhost:80")
 ENV = os.environ.get("ENV", "development")
-AGENT_RUNTIME_ROLLOUT = RuntimeRolloutConfig.from_env(os.environ)
+AGENT_RUNTIME_DRY_RUN = RuntimeDryRunConfig.from_env(os.environ)
 
 # Skill 仓库路径（含 manifest.yaml 的子目录）
 # dev 默认 ./skills（本地 git clone XD-AIGC-skills 到此）
