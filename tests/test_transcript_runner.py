@@ -43,8 +43,10 @@ def test_transcript_fixtures_are_present_and_redacted():
         "skill_action_trace_v1",
         "timeout_cancel_local_v1",
         "timeout_continue_wait_v1",
+        "timeout_modify_v1",
+        "timeout_retry_v1",
     }
-    assert len(FIXTURES) >= 11
+    assert len(FIXTURES) >= 14
     for fixture in FIXTURES:
         assert_fixture_is_redacted(fixture)
 
