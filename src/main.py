@@ -42,7 +42,8 @@ from src.skill.provenance import filter_updated_params
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
-from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
+from src.config import AGENT_RUNTIME_ROLLOUT, FEISHU_APP_ID, FEISHU_APP_SECRET
+from src.runtime_rollout import choose_runtime
 import time
 
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
@@ -1091,6 +1092,14 @@ async def _process(data) -> None:
 
 async def _process_locked(message_id: str, msg_type: str, content: dict, user_id: str) -> None:
     text, image_key = _normalize_message(msg_type, content)
+    runtime = choose_runtime(user_id, AGENT_RUNTIME_ROLLOUT)
+    log.info(
+        "[RUNTIME] user=%s selected=%s mode=%s v2_percent=%s",
+        user_id,
+        runtime,
+        AGENT_RUNTIME_ROLLOUT.mode,
+        AGENT_RUNTIME_ROLLOUT.v2_percent,
+    )
     session = await _load_conversation_session(user_id)
 
     # 智能路径 1：用户一次性给了 text + image（典型场景：群里 @bot 配图说意图）

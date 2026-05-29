@@ -86,6 +86,34 @@ sudo vim /etc/xd-aigc-agent/.env  # 填 FEISHU_APP_SECRET / LLM_API_KEY
 - `FEISHU_APP_SECRET`：[飞书开放平台](https://open.feishu.cn/app/cli_aa99420199f9dbd8) → 凭证与基础信息
 - `LLM_API_KEY`：找 LLM proxy 维护者拿 bot 专属 service token（不要用 Johnny 个人 key！）
 
+### 2.2b Agent runtime 灰度开关
+
+默认保持 v1 观测模式：
+
+```env
+AGENT_RUNTIME=v1
+AGENT_RUNTIME_V2_PERCENT=0
+```
+
+灰度时只改 `.env` 后重启服务：
+
+```bash
+sudo vim /etc/xd-aigc-agent/.env
+sudo systemctl restart xd-aigc-agent
+sudo journalctl -u xd-aigc-agent --since '5 min ago' | grep RUNTIME
+```
+
+建议节奏：
+
+| 阶段 | 配置 | 观察 |
+|---|---|---|
+| 0% | `AGENT_RUNTIME=v1`, `AGENT_RUNTIME_V2_PERCENT=0` | 基线日志 |
+| 10% | `AGENT_RUNTIME=v2`, `AGENT_RUNTIME_V2_PERCENT=10` | 观察 1 周 |
+| 50% | `AGENT_RUNTIME=v2`, `AGENT_RUNTIME_V2_PERCENT=50` | 观察 1 周 |
+| 100% | `AGENT_RUNTIME=v2`, `AGENT_RUNTIME_V2_PERCENT=100` | 跑稳 2 周后再考虑删 v1 兼容字段 |
+
+回退：把 `AGENT_RUNTIME=v1`、`AGENT_RUNTIME_V2_PERCENT=0` 写回 `.env` 并重启。不要清 Redis；按 session TTL 自然消化。
+
 ### 2.3 跑健康检查（部署前自检）
 ```bash
 sudo docker run --rm --network=host --env-file=/etc/xd-aigc-agent/.env \
