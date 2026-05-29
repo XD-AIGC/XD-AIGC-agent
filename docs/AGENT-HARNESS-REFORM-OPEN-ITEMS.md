@@ -92,6 +92,7 @@
 ## 已知实现偏离
 
 - **PR #14 / P3d（2026-05-29）**：SPEC §11.1 原计划要求未知 skill action 必须声明 `actions[].data_schema_id`，否则 ObservationReducer 拒绝 observation。当前实现改为向后兼容策略：`data_schema_id` 可选，内置 action 自动推断，未知结构降级为 `unknown.raw`。后续需二选一：更新 SPEC §11.1 为“可选但推荐”，或等现有 skill 迁移后再收紧为强校验。
+- **PR #22 / P4 dispatch（2026-05-29）**：PLAN P4 原计划接 v1/v2 进程内 dispatch；实际改为 dry-run 标签 + 代码级回滚。原因：v1 不是独立可运行的执行器，伪造 dispatch 会绕过 `active_job`、background worker 和幂等防线（详见 `docs/RUNTIME-DRY-RUN.md` §8）。
 
 ---
 
