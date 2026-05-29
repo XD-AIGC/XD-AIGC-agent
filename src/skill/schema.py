@@ -19,6 +19,13 @@ class SkillOutput(BaseModel):
     display_as: Literal["feishu_card", "feishu_image", "feishu_text"]
 
 
+class SkillActionMetadata(BaseModel):
+    """Optional manifest metadata for callable skill actions."""
+
+    name: str
+    data_schema_id: Optional[str] = None
+
+
 class HttpBackend(BaseModel):
     """单次 HTTP 调用，同步返回结果。frame-bg-remover 用这个。"""
     type: Literal["http"] = "http"
@@ -78,3 +85,5 @@ class Skill(BaseModel):
     # Lazy-load 资源：key 是 action 名（如 'lookup_characters'）；
     # value 可以是相对文件路径（file 类型）或 HttpResource dict（http 类型）
     lazy_resources: dict[str, LazyResource] = {}
+    # Optional metadata for HTTP actions discovered from SKILL.md / manifest.
+    actions: list[SkillActionMetadata] = []

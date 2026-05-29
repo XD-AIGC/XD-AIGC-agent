@@ -52,6 +52,24 @@ lazy_resources:
   lookup_x: references/x.tsv
 """
 
+ACTION_SCHEMA_MANIFEST = """\
+name: test-action-schema
+description: action schema test skill
+skill_md_path: SKILL.md
+api:
+  type: http
+  endpoint_path: /api/submit
+  method: POST
+  content_type: application/json
+params: []
+output:
+  type: text
+  display_as: feishu_text
+actions:
+  - name: get_styles
+    data_schema_id: poster.styles
+"""
+
 
 def test_load_skills_finds_skill_with_manifest(tmp_path, monkeypatch):
     import src.skill.registry as reg
@@ -91,6 +109,23 @@ def test_load_skill_resolves_lazy_resources_to_abspath(tmp_path, monkeypatch):
     resource_path = skills["test-complex"].lazy_resources["lookup_x"]
     assert Path(resource_path).is_absolute()
     assert Path(resource_path).read_text() == "data"
+
+
+def test_load_skill_preserves_action_data_schema_metadata(tmp_path, monkeypatch):
+    import src.skill.registry as reg
+
+    _make_skill_dir(
+        tmp_path,
+        "test-action-schema",
+        ACTION_SCHEMA_MANIFEST,
+        skill_md="```http\nGET /api/styles\n```",
+    )
+    monkeypatch.setattr(reg, "SKILLS_DIR", str(tmp_path))
+
+    skills = load_skills()
+
+    assert skills["test-action-schema"].actions[0].name == "get_styles"
+    assert skills["test-action-schema"].actions[0].data_schema_id == "poster.styles"
 
 
 def test_load_skills_skips_broken_manifest(tmp_path, monkeypatch):

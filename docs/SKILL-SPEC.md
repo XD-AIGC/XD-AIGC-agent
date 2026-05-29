@@ -50,6 +50,9 @@ output:
 lazy_resources:                 # 可选，路径相对 manifest 同目录
   lookup_characters: references/characters.tsv
   lookup_options: references/options.md
+actions:                        # 可选，给 SKILL.md 中可调用 HTTP action 补 runtime 元数据
+  - name: get_styles
+    data_schema_id: poster.styles
 ```
 
 **所有路径相对 manifest 所在目录**（agent 自动解析为绝对路径）。
@@ -65,6 +68,43 @@ lazy_resources:                 # 可选，路径相对 manifest 同目录
 ```
 
 **重要**：`type: enum` + `values` 非空时，agent 在 `ask_param` 时**自动追加 📋 可选值列表**给用户看（兜底防 LLM 漏列）。
+
+## 3.1 Action Metadata（可选）
+
+复杂 skill 的 `SKILL.md` 可以写 HTTP action，例如：
+
+```http
+GET /api/styles
+POST /api/generate-step1-only
+```
+
+Agent 会自动把它们加入 `call_skill_action` 白名单，并生成 action name，例如：
+
+| HTTP | action name |
+|---|---|
+| `GET /api/styles` | `get_styles` |
+| `POST /api/generate-step1-only` | `generate_step1_only` |
+
+如果 action 返回自定义结构化 JSON，建议在 manifest 里补 `data_schema_id`：
+
+```yaml
+actions:
+  - name: get_styles
+    data_schema_id: poster.styles
+```
+
+这样 Observation 会传给 LLM：
+
+```json
+{
+  "data": {
+    "schema_id": "poster.styles",
+    "payload": {"items": [{"style": "comic"}]}
+  }
+}
+```
+
+内置 schema 可自动识别：`image.fileId`、`image.url`、`image.list`、`job.polling`、`lookup.characters`、`text.plain`。未知结构会降级为 `unknown.raw`，不会假装成角色或图片。
 
 ## 4. Backend 两种
 
