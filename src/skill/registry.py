@@ -94,7 +94,7 @@ def _rich_poll_backend(api: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _pick_submit_config(api: dict[str, Any]) -> dict[str, Any] | None:
-    for key in ("step2", "fusion", "single"):
+    for key in ("step2", "single", "fusion"):
         cfg = api.get(key)
         if isinstance(cfg, dict) and cfg.get("submit_path"):
             return cfg
