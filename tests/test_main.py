@@ -640,6 +640,7 @@ async def test_completed_session_unrelated_question_does_not_submit(monkeypatch)
 @pytest.mark.asyncio
 async def test_completed_session_adjustment_still_reaches_skill_llm(monkeypatch):
     from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
     from src.orchestrator.schema import UserSession
     from src.orchestrator.schema import BotAction
     from src.skill.schema import Skill, HttpBackend, SkillOutput
@@ -680,6 +681,25 @@ async def test_completed_session_adjustment_still_reaches_skill_llm(monkeypatch)
     reply_text.assert_called_once()
     assert reply_text.call_args[0][2] == "已收到修改"
     assert store.saved[0] == "user-1"
+
+    v2_session = ConversationSession(
+        phase=ConversationPhase.completed,
+        mode="skill",
+        skill_name="xd-poster-gen",
+        collected_params={"characters": ["harry"], "actionDesc": "踢球"},
+        completed=True,
+    )
+    store.saved = None
+    skill_decide.reset_mock(return_value=True, side_effect=True)
+    skill_decide.return_value = BotAction(action="reply", message="已收到修改")
+    reply_text.reset_mock()
+
+    await main_mod._agentic_loop("换成横版", v2_session, "user-1", "msg-2")
+
+    skill_decide.assert_awaited_once()
+    assert v2_session.phase == ConversationPhase.collecting
+    assert v2_session.completed is False
+    assert v2_session.collected_params == {"characters": ["harry"], "actionDesc": "踢球"}
 
 
 @pytest.mark.asyncio

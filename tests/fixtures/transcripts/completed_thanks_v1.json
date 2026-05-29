@@ -1,0 +1,41 @@
+{
+  "id": "completed_thanks_v1",
+  "description": "完成态下用户说谢谢，应回复继续/调整边界提示，不启动新任务、不进 LLM。",
+  "initial_session": {
+    "schema_version": 2,
+    "phase": "completed",
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "collected_params": {
+      "characters": ["annie"],
+      "actionDesc": "喝咖啡"
+    },
+    "completed": true
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "谢谢",
+      "expect": {
+        "reply_text_contains": ["我还在上一个任务里", "调整哪里", "换别的需求"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 0,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": true
+        },
+        "v2_optional": {
+          "phase": "completed"
+        }
+      }
+    }
+  ]
+}

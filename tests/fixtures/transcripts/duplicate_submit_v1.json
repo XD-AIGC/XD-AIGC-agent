@@ -1,0 +1,63 @@
+{
+  "id": "duplicate_submit_v1",
+  "description": "同一 message_id 的确认重投递不应重复创建 backend job，应回复已提交过。",
+  "requires_session_fields": ["active_job", "last_processed_message_ids"],
+  "initial_session": {
+    "schema_version": 2,
+    "phase": "awaiting_confirmation",
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "pending_param": null,
+    "collected_params": {
+      "characters": ["annie"],
+      "actionDesc": "喝咖啡",
+      "ratio": "3:2"
+    },
+    "completed": false,
+    "last_processed_message_ids": ["<MSG_1>"],
+    "active_job": {
+      "job_id": "backend-job-existing",
+      "skill_name": "xd-poster-gen",
+      "action_name": "submit",
+      "payload": {
+        "characters": ["annie"],
+        "actionDesc": "喝咖啡",
+        "ratio": "3:2"
+      },
+      "source_message_id": "<MSG_1>",
+      "status": "running",
+      "started_at": 1779940000.0
+    }
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "确认",
+      "expect": {
+        "reply_text_contains": ["已经提交过", "还在生成中"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 0,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": false,
+          "active_job": {
+            "source_message_id": "<MSG_1>",
+            "status": "running"
+          }
+        },
+        "v2_optional": {
+          "phase": "running_job",
+          "last_processed_message_ids_contains": "<MSG_1>"
+        }
+      }
+    }
+  ]
+}
