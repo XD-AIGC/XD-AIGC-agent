@@ -42,7 +42,7 @@
         }
       ],
       "expect": {
-        "reply_text_contains": ["已改成横版，请确认是否生成。"],
+        "reply_text_contains": ["准备按以下信息生成", "annie", "喝咖啡", "3:2", "确认无误"],
         "trace": {
           "router_llm_calls": 0,
           "skill_llm_calls": 2,

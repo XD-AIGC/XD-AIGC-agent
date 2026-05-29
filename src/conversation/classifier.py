@@ -21,16 +21,28 @@ SKILL_CHITCHAT_PHRASES = {
 }
 
 CONFIRM_PHRASES = {"确认", "确定", "可以", "没问题", "就这样"}
+CONFIRM_PHRASES |= {"yes", "ok", "好", "好的", "行", "可以的", "嗯", "嗯嗯", "收到"}
 CANCEL_PHRASES = {"取消", "算了", "不要了", "停止"}
 CONTINUE_WAIT_PHRASES = {"继续等", "继续等待", "等一下", "再等等"}
 ASK_STATUS_PHRASES = {"还在吗", "好了没", "进度", "什么状态", "生成好了吗"}
 ASK_STATUS_SUFFIXES = {"还在吗", "好了没", "什么状态", "生成好了吗", "进度怎么样", "进度如何"}
 SENTENCE_PARTICLES = ("吧", "啊", "呀", "啦", "哦", "喔", "呢")
+RUNTIME_TOPIC_MARKERS = {
+    "skilltoken", "skill_token", "artdam_skill_token", "token",
+    "鉴权", "授权", "后端", "接口", "api", "http", "调用",
+    "日志", "manifest", "服务", "端口", "8085", "8090",
+}
+RUNTIME_CONTEXT_MARKERS = {
+    "刚刚", "刚才", "这次", "上次", "当前", "生图", "生成",
+    "任务", "skill", "工具", "没有", "没",
+}
+QUESTION_MARKERS = {"吗", "么", "是不是", "有没有", "为什么", "怎么", "啥", "什么", "?", "？", "没有", "没"}
 
 
 class TurnIntent(str, Enum):
     answer_option = "answer_option"
     ask_capability = "ask_capability"
+    ask_runtime = "ask_runtime"
     ask_status = "ask_status"
     cancel = "cancel"
     chitchat = "chitchat"
@@ -65,6 +77,8 @@ class TurnClassifier:
             return ClassifiedTurn(TurnIntent.answer_option, reason="numbered option")
         if is_capability_question(text):
             return ClassifiedTurn(TurnIntent.ask_capability, reason="capability question")
+        if normalized_phase == ConversationPhase.completed and is_runtime_question(text):
+            return ClassifiedTurn(TurnIntent.ask_runtime, reason="runtime/control-plane question")
         if normalized_phase == ConversationPhase.awaiting_confirmation and _matches_phrase(text, CONFIRM_PHRASES):
             return ClassifiedTurn(TurnIntent.confirm, reason="confirmation phrase")
         if is_retry(text):
@@ -136,6 +150,18 @@ def is_capability_question(text: str) -> bool:
         return True
     return ("还能" in text or "还可以" in text) and (
         "做什么" in text or "什么事" in text or "哪些" in text or "啥" in text
+    )
+
+
+def is_runtime_question(text: str) -> bool:
+    text = compact_text(text)
+    if not text:
+        return False
+    if not any(marker in text for marker in RUNTIME_TOPIC_MARKERS):
+        return False
+    return (
+        any(marker in text for marker in QUESTION_MARKERS)
+        or any(marker in text for marker in RUNTIME_CONTEXT_MARKERS)
     )
 
 

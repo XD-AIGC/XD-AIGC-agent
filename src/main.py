@@ -631,8 +631,110 @@ def _completed_boundary_msg() -> str:
     return _response_composer().completed_boundary()
 
 
+def _completed_runtime_msg(session) -> str:
+    skill_name = getattr(session, "skill_name", None) or "当前 skill"
+    active_job = getattr(session, "active_job", None)
+    action_name = getattr(active_job, "action_name", None) or "后端动作"
+    status = getattr(active_job, "status", None)
+    if status == "completed":
+        lead = f"刚刚这次任务已经通过 skill `{skill_name}` 的 `{action_name}` 提交并完成，图片也已返回。"
+    else:
+        lead = f"当前会话里记录的最近一次后端任务是 skill `{skill_name}` 的 `{action_name}`。"
+    return (
+        f"{lead}\n\n"
+        "为了安全，我不会在飞书里展示或确认任何 `SKILL_TOKEN` / token 值。"
+        "是否携带 `SKILL_TOKEN` 需要看服务端受控日志或后端鉴权日志。"
+        "\n\n"
+        "要继续生成、调整刚刚那张图，或换其他任务，可以直接说。"
+    )
+
+
 def _awaiting_confirmation_boundary_msg() -> str:
     return _response_composer().awaiting_confirmation_boundary()
+
+
+_CONFIRMATION_SKIP_KEYS = {
+    "cachedStep1FileId",
+    "charPrompt",
+    "image_base64",
+    "prompt",
+    "refImage",
+    "sceneConstraint",
+    "sceneRefImage",
+    "stylePrompt",
+}
+_CONFIRMATION_LABELS = {
+    "actionDesc": "动作/事件",
+    "characters": "角色/动物",
+    "character": "角色/动物",
+    "ratio": "比例",
+    "resolution": "清晰度",
+    "scene": "场景/动作",
+    "sceneChoice": "场景",
+    "style": "风格",
+}
+
+
+def _await_confirmation_prompt_msg(session, skill: Skill | None) -> str:
+    lines = ["收到，准备按以下信息生成："]
+    for name in _confirmation_param_names(session, skill):
+        value = (getattr(session, "collected_params", {}) or {}).get(name)
+        rendered = _render_confirmation_value(value)
+        if not rendered:
+            continue
+        label = _confirmation_label(name, skill)
+        lines.append(f"- {label}: {rendered}")
+    if len(lines) == 1:
+        lines.append("- 已收齐生成参数。")
+    lines.extend([
+        "",
+        "确认无误请回复「确认」或「ok」开始生成；要修改请直接说明；不做了回复「取消」。",
+    ])
+    return "\n".join(lines)
+
+
+def _confirmation_param_names(session, skill: Skill | None) -> list[str]:
+    collected = getattr(session, "collected_params", {}) or {}
+    ordered: list[str] = []
+    if skill is not None:
+        ordered.extend(param.name for param in skill.params)
+    ordered.extend(name for name in collected if name not in ordered)
+    return [name for name in ordered if name not in _CONFIRMATION_SKIP_KEYS]
+
+
+def _confirmation_label(name: str, skill: Skill | None) -> str:
+    if skill is not None:
+        param = next((item for item in skill.params if item.name == name), None)
+        if param is not None and param.prompt_to_user:
+            return param.prompt_to_user
+    return _CONFIRMATION_LABELS.get(name, name)
+
+
+def _render_confirmation_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        if value.startswith("artdam://"):
+            return ""
+        return _truncate_confirmation_value(value)
+    if isinstance(value, list):
+        parts = [_render_confirmation_value(item) for item in value]
+        parts = [part for part in parts if part]
+        return "、".join(parts)
+    if isinstance(value, dict):
+        for key in ("name", "displayName", "label", "title", "key", "id"):
+            item = value.get(key)
+            if isinstance(item, str) and item:
+                return _truncate_confirmation_value(item)
+        return ""
+    return _truncate_confirmation_value(str(value))
+
+
+def _truncate_confirmation_value(value: str, limit: int = 80) -> str:
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "..."
 
 
 async def _reply_completion_followup(message_id: str, session) -> bool:
@@ -1450,7 +1552,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
     # Retry 快路径：session 已完成 + 用户说「再来一张」类短语 → 不进 LLM，直接重 submit
     if (
-        session.completed
+        phase == ConversationPhase.completed
         and session.mode == "skill"
         and session.skill_name
         and _retry_payload(session)
@@ -1470,7 +1572,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             _start_background_worker(user_id, submission.active_job, message_id)
             return
 
-    if session.completed and session.mode == "skill" and turn.intent == TurnIntent.ask_capability:
+    if phase == ConversationPhase.completed and session.mode == "skill" and turn.intent == TurnIntent.ask_capability:
         msg = _completed_capability_msg()
         _append_history(session, "user", text)
         _append_history(session, "assistant", msg)
@@ -1478,8 +1580,16 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         await _store.save(user_id, session)
         return
 
+    if phase == ConversationPhase.completed and session.mode == "skill" and SideEffect.reply_runtime in transition.side_effects:
+        msg = _completed_runtime_msg(session)
+        _append_history(session, "user", text)
+        _append_history(session, "assistant", msg)
+        await reply_text(_client, message_id, msg)
+        await _store.save(user_id, session)
+        return
+
     if (
-        session.completed
+        phase == ConversationPhase.completed
         and session.mode == "skill"
         and not transition.allow_skill_runtime
     ):
@@ -1677,7 +1787,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             return
 
         if action.action == "await_confirmation":
-            msg = action.message or "请确认是否开始生成。"
+            skill = get_registry().get(session.skill_name) if session.skill_name else None
+            msg = _await_confirmation_prompt_msg(session, skill)
             if isinstance(session, ConversationSession):
                 session.phase = ConversationPhase.awaiting_confirmation
                 sync_legacy_fields(session)
