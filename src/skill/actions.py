@@ -32,6 +32,7 @@ class SkillHttpAction(BaseModel):
     method: Literal["GET", "POST"]
     path_template: str
     source: Literal["skill_md", "manifest_api", "lazy_resource"]
+    data_schema_id: str | None = None
 
 
 @dataclass
@@ -86,6 +87,7 @@ def build_action_catalog(skill: Skill) -> dict[str, SkillHttpAction]:
         _add_action(actions, api.submit_method, api.submit_path, "manifest_api", preferred="manifest_submit")
         _add_action(actions, "GET", api.poll_path_template, "manifest_api", preferred="manifest_poll")
 
+    _apply_action_metadata(actions, skill)
     return actions
 
 
@@ -159,6 +161,7 @@ async def execute_skill_action(
         status="success",
         summary=f"{action.name} 调用成功",
         data=data,
+        data_schema_id=action.data_schema_id,
         source_name=action.name,
     )
 
@@ -197,6 +200,14 @@ def _add_action(
         path_template=path,
         source=source,
     )
+
+
+def _apply_action_metadata(actions: dict[str, SkillHttpAction], skill: Skill) -> None:
+    for metadata in skill.actions:
+        action = actions.get(metadata.name)
+        if action is None:
+            continue
+        actions[metadata.name] = action.model_copy(update={"data_schema_id": metadata.data_schema_id})
 
 
 def _unique_name(actions: dict[str, SkillHttpAction], base: str) -> str:
@@ -266,4 +277,3 @@ def _truncate_data(data: Any) -> Any:
     if len(text) <= _MAX_TEXT_CHARS:
         return data
     return text[:_MAX_TEXT_CHARS] + "...[truncated]"
-
