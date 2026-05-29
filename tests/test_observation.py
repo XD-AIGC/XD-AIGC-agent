@@ -118,3 +118,33 @@ def test_scalar_string_payload_uses_text_plain_schema():
         "schema_id": "text.plain",
         "payload": {"text": "hello world"},
     }
+
+
+def test_large_dict_payload_preserves_later_top_level_lists():
+    npc_characters = [
+        {
+            "key": f"npc-{idx}",
+            "name": f"NPC {idx}",
+            "refImage": f"artdam://asset/{idx}",
+            "prompt": "x" * 1000,
+        }
+        for idx in range(20)
+    ]
+    scenes = [
+        {"key": "flowerfield", "name": "花田", "refImage": "artdam://asset/2140"},
+        {"key": "harbor", "name": "港口", "refImage": "artdam://asset/2142"},
+    ]
+
+    payload = _prompt_payload(
+        SkillActionObservation(
+            status="success",
+            summary="artdam library loaded",
+            data={"npcCharacters": npc_characters, "scenes": scenes},
+            source_name="get_artdam_library",
+        )
+    )
+
+    data = payload["data"]["payload"]
+    assert data["_list_counts"]["npcCharacters"] == 20
+    assert any(scene["key"] == "harbor" for scene in data["scenes"])
+    assert len(json.dumps(payload, ensure_ascii=False)) < 9000

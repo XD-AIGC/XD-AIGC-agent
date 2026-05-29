@@ -24,6 +24,25 @@ from src.skill.schema import HttpBackend, HttpResource, PollBackend, Skill
 _HTTP_LINE_RE = re.compile(r"^\s*(GET|POST)\s+(\S+)", re.IGNORECASE | re.MULTILINE)
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 _MAX_TEXT_CHARS = 6000
+_COMPACT_LIST_ITEMS = 6
+_COMPACT_TEXT_CHARS = 360
+_PREFERRED_RECORD_KEYS = (
+    "id",
+    "key",
+    "name",
+    "displayName",
+    "category",
+    "type",
+    "refImage",
+    "url",
+    "fileId",
+    "file_id",
+    "artdamAssetId",
+    "artdamPublicId",
+    "public_id",
+    "fusionDesc",
+    "prompt",
+)
 log = logging.getLogger(__name__)
 
 
@@ -283,4 +302,43 @@ def _truncate_data(data: Any) -> Any:
     text = json.dumps(data, ensure_ascii=False, default=str)
     if len(text) <= _MAX_TEXT_CHARS:
         return data
-    return text[:_MAX_TEXT_CHARS] + "...[truncated]"
+    return _compact_for_prompt(data)
+
+
+def _compact_for_prompt(value: Any, *, depth: int = 0) -> Any:
+    if depth > 4:
+        return _compact_scalar(value)
+    if isinstance(value, dict):
+        return _compact_dict(value, depth=depth)
+    if isinstance(value, list):
+        items = [_compact_for_prompt(item, depth=depth + 1) for item in value[:_COMPACT_LIST_ITEMS]]
+        if len(value) > _COMPACT_LIST_ITEMS:
+            items.append({"_truncated": len(value) - _COMPACT_LIST_ITEMS})
+        return items
+    return _compact_scalar(value)
+
+
+def _compact_dict(value: dict[str, Any], *, depth: int) -> dict[str, Any]:
+    keys = _ordered_compact_keys(value)
+    compacted = {key: _compact_for_prompt(value[key], depth=depth + 1) for key in keys}
+    list_counts = {
+        key: len(item)
+        for key, item in value.items()
+        if isinstance(item, list) and len(item) > _COMPACT_LIST_ITEMS
+    }
+    if list_counts and depth == 0:
+        compacted["_list_counts"] = list_counts
+    return compacted
+
+
+def _ordered_compact_keys(value: dict[str, Any]) -> list[str]:
+    preferred = [key for key in _PREFERRED_RECORD_KEYS if key in value]
+    if preferred:
+        return preferred
+    return list(value.keys())
+
+
+def _compact_scalar(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > _COMPACT_TEXT_CHARS:
+        return value[:_COMPACT_TEXT_CHARS] + "...[truncated]"
+    return value

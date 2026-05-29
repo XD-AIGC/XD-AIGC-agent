@@ -848,6 +848,103 @@ async def test_select_skill_first_turn_uses_original_user_text_for_provenance(mo
 
 
 @pytest.mark.asyncio
+async def test_get_skill_action_result_is_cached_as_loaded_resource(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import UserSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.actions import SkillActionObservation
+    from src.skill.schema import Skill, HttpBackend, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = []
+
+        async def save(self, user_id, session):
+            self.saved.append((user_id, session.model_copy(deep=True)))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(side_effect=[
+        BotAction(action="call_skill_action", action_name="list_season_characters"),
+        BotAction(action="reply", message="已读取角色"),
+    ])
+    execute_skill_action = AsyncMock(
+        return_value=SkillActionObservation(
+            status="success",
+            summary="list_season_characters 调用成功",
+            data={"characters": [{"key": "annie", "name": "安妮"}]},
+            source_name="list_season_characters",
+        )
+    )
+    fake_skill = Skill(
+        name="xd-town-studio",
+        description="角色场景图",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="```http\nGET /api/season-characters\n```",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute_skill_action", execute_skill_action)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-town-studio": fake_skill})
+
+    session = UserSession(mode="skill", skill_name="xd-town-studio")
+
+    await main_mod._agentic_loop("加载角色", session, "user-1", "msg-1")
+
+    execute_skill_action.assert_awaited_once()
+    assert "list_season_characters" in store.saved[-1][1].loaded_resources
+    assert "annie" in store.saved[-1][1].loaded_resources["list_season_characters"]
+    reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cached_get_skill_action_is_not_reexecuted(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import UserSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.schema import Skill, HttpBackend, SkillOutput
+
+    class FakeStore:
+        async def save(self, user_id, session):
+            pass
+
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(side_effect=[
+        BotAction(action="call_skill_action", action_name="list_season_characters"),
+        BotAction(action="reply", message="继续"),
+    ])
+    execute_skill_action = AsyncMock()
+    fake_skill = Skill(
+        name="xd-town-studio",
+        description="角色场景图",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="```http\nGET /api/season-characters\n```",
+    )
+    monkeypatch.setattr(main_mod, "_store", FakeStore())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute_skill_action", execute_skill_action)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-town-studio": fake_skill})
+
+    session = UserSession(
+        mode="skill",
+        skill_name="xd-town-studio",
+        loaded_resources={"list_season_characters": '{"status":"success"}'},
+    )
+
+    await main_mod._agentic_loop("继续", session, "user-1", "msg-1")
+
+    execute_skill_action.assert_not_called()
+    assert "禁止重复 call_skill_action" in skill_decide.await_args_list[1].args[0]
+    reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_submit_acknowledges_background_job(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession

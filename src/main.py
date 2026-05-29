@@ -36,7 +36,7 @@ from src.conversation.session import (
 from src.conversation.state_machine import SideEffect, StateMachine
 from src.session.redis_store import SessionStore
 from src.session.step1_cache import Step1Cache
-from src.skill.actions import SkillActionError, SkillActionObservation, execute_skill_action
+from src.skill.actions import SkillActionError, SkillActionObservation, build_action_catalog, execute_skill_action
 from src.skill.executor import ExecuteResult, execute, poll_existing_job, SkillExecutionError, submit_poll_job
 from src.skill.job_controller import InvalidJobPayloadError, JobController, PayloadTooLargeError, StaleSessionError
 from src.skill.provenance import filter_updated_params
@@ -366,6 +366,25 @@ def _enum_options_block(skill: Skill | None, param_name: str | None) -> str:
     lines = [f"\n\n📋 {param.prompt_to_user} 可选值（回复其中一个）："]
     lines.extend(f"- {v}" for v in param.values)
     return "\n".join(lines)
+
+
+def _is_cacheable_skill_action(skill: Skill, action_name: str | None) -> bool:
+    if not action_name:
+        return False
+    try:
+        action = build_action_catalog(skill).get(action_name)
+    except Exception:
+        log.exception("failed to build skill action catalog")
+        return False
+    return bool(action and action.method == "GET")
+
+
+def _missing_required_param_names(skill: Skill, collected_params: dict) -> list[str]:
+    return [
+        param.name
+        for param in skill.params
+        if param.required and param.name not in collected_params
+    ]
 
 
 async def _prepare_result_reply(result) -> _PreparedResultReply:
@@ -1404,6 +1423,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
     lookup_count = 0
     skill_action_count = 0
+    repeated_skill_action_count = 0
     current_text = text
     # 把本轮用户原始输入加进 history（仅一次，loop 内部 lookup continue 时不重复加）
     _append_history(session, "user", text)
@@ -1577,6 +1597,22 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             if skill is None:
                 await reply_text(_client, message_id, "内部错误：skill 丢失")
                 return
+            cacheable_action = _is_cacheable_skill_action(skill, action.action_name)
+            if cacheable_action and action.action_name in session.loaded_resources:
+                repeated_skill_action_count += 1
+                missing = _missing_required_param_names(skill, session.collected_params)
+                if missing:
+                    next_step = f"请基于已加载资源继续收集缺失参数 {missing}，输出 ask_param/reply。"
+                else:
+                    next_step = "所有必填参数已齐，请基于已加载资源构造 submit_payload 并输出 submit。"
+                current_text = (
+                    f"[skill action `{action.action_name}` 本轮已经执行过，结果在已加载资源中。"
+                    f"{next_step}禁止重复 call_skill_action。]"
+                )
+                if repeated_skill_action_count > 2:
+                    log.warning("[SKILL_ACTION] repeated cached action=%s", action.action_name)
+                await _store.save(user_id, session)
+                continue
 
             skill_action_count += 1
             if skill_action_count > _MAX_SKILL_ACTIONS_PER_TURN:
@@ -1594,6 +1630,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                     status="error",
                     summary=f"{action.action_name or 'unknown'} 调用异常: {type(e).__name__}: {e}",
                 )
+            if cacheable_action and action.action_name and obs.status == "success":
+                session.loaded_resources[action.action_name] = obs.for_prompt()
 
             await _send_skill_action_artifact(message_id, obs)
             await _maybe_send_skill_image_by_file_id(skill, message_id, obs)
