@@ -57,3 +57,48 @@ def test_explicit_schema_id_wraps_unknown_skill_payload():
         "schema_id": "poster.custom_result",
         "payload": {"foo": "bar"},
     }
+
+
+def test_image_list_payload_uses_image_list_schema():
+    payload = _prompt_payload(
+        SkillActionObservation(
+            status="success",
+            summary="variants loaded",
+            data=[{"fileId": "a"}, {"fileId": "b"}],
+        )
+    )
+
+    assert payload["data"] == {
+        "schema_id": "image.list",
+        "payload": {"items": [{"fileId": "a"}, {"fileId": "b"}]},
+    }
+
+
+def test_generic_list_payload_does_not_default_to_characters():
+    payload = _prompt_payload(
+        SkillActionObservation(
+            status="success",
+            summary="styles loaded",
+            data=[{"style": "comic"}],
+        )
+    )
+
+    assert payload["data"] == {
+        "schema_id": "unknown.raw",
+        "payload": {"items": [{"style": "comic"}]},
+    }
+
+
+def test_scalar_string_payload_uses_text_plain_schema():
+    payload = _prompt_payload(
+        SkillActionObservation(
+            status="success",
+            summary="text loaded",
+            data="hello world",
+        )
+    )
+
+    assert payload["data"] == {
+        "schema_id": "text.plain",
+        "payload": {"text": "hello world"},
+    }
