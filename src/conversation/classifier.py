@@ -69,7 +69,10 @@ class TurnClassifier:
             return ClassifiedTurn(TurnIntent.confirm, reason="confirmation phrase")
         if is_retry(text):
             return ClassifiedTurn(TurnIntent.retry, reason="retry phrase")
-        if normalized_phase == ConversationPhase.completed and is_completed_skill_continuation(text):
+        if (
+            normalized_phase in {ConversationPhase.awaiting_confirmation, ConversationPhase.completed}
+            and is_completed_skill_continuation(text)
+        ):
             return ClassifiedTurn(TurnIntent.modify_param, reason="completed continuation")
         running = self._classify_running_control(text, normalized_phase)
         if running is not None:

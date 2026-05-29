@@ -631,6 +631,10 @@ def _completed_boundary_msg() -> str:
     return _response_composer().completed_boundary()
 
 
+def _awaiting_confirmation_boundary_msg() -> str:
+    return _response_composer().awaiting_confirmation_boundary()
+
+
 async def _reply_completion_followup(message_id: str, session) -> bool:
     msg = _completion_followup_msg()
     sent = bool(await reply_text(_client, message_id, msg))
@@ -701,6 +705,33 @@ async def _handle_duplicate_message_redelivery(session, user_id: str, message_id
     return True
 
 
+async def _reply_job_begin_error(session, user_id: str, message_id: str, exc: Exception) -> None:
+    if isinstance(exc, StaleSessionError):
+        msg = "状态刚刚发生变化，请重新回复「确认」提交。"
+    elif isinstance(exc, InvalidJobPayloadError):
+        log.warning("[JOB] payload rejected: %s", exc)
+        msg = _job_payload_error_message(exc)
+    else:
+        raise TypeError(f"unsupported job begin error: {type(exc).__name__}") from exc
+    await reply_text(_client, message_id, msg)
+    _append_history(session, "assistant", msg)
+    await _store.save(user_id, session)
+
+
+async def _reply_duplicate_job(session, user_id: str, message_id: str, skill: Skill, submission) -> None:
+    record_metric(
+        "duplicate_submit",
+        skill_name=skill.name,
+        action_name=submission.active_job.action_name,
+        job_status=submission.active_job.status,
+        user_key=metric_user_key(user_id),
+    )
+    msg = _duplicate_submit_message(submission.active_job)
+    await reply_text(_client, message_id, msg)
+    _append_history(session, "assistant", msg)
+    await _store.save(user_id, session)
+
+
 async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill, payload: dict, action_name: str):
     try:
         submission = await _job_controller.begin_submit(
@@ -712,31 +743,69 @@ async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill
             source_message_id=message_id,
             expected_updated_at=getattr(session, "updated_at", None),
         )
-    except StaleSessionError:
-        msg = "状态刚刚发生变化，请重新回复「确认」提交。"
-        await reply_text(_client, message_id, msg)
-        _append_history(session, "assistant", msg)
-        await _store.save(user_id, session)
-        return None
-    except InvalidJobPayloadError as exc:
-        log.warning("[JOB] payload rejected: %s", exc)
-        msg = _job_payload_error_message(exc)
-        await reply_text(_client, message_id, msg)
-        _append_history(session, "assistant", msg)
-        await _store.save(user_id, session)
+    except (StaleSessionError, InvalidJobPayloadError) as exc:
+        await _reply_job_begin_error(session, user_id, message_id, exc)
         return None
     if submission.duplicate:
-        record_metric(
-            "duplicate_submit",
+        await _reply_duplicate_job(session, user_id, message_id, skill, submission)
+        return None
+    return submission
+
+
+def _skill_action_job_payload(action_params: dict | None) -> dict:
+    if not isinstance(action_params, dict):
+        return {}
+    json_payload = action_params.get("json")
+    if isinstance(json_payload, dict):
+        return dict(json_payload)
+    return dict(action_params)
+
+
+def _minimal_skill_action_job_payload(action_name: str) -> dict:
+    return {"source": "skill_action", "action_name": action_name}
+
+
+async def _begin_existing_skill_action_job(
+    session,
+    user_id: str,
+    message_id: str,
+    skill: Skill,
+    job_id: str,
+    payload: dict,
+    action_name: str,
+):
+    try:
+        submission = await _job_controller.begin_running(
+            session,
+            user_id=user_id,
             skill_name=skill.name,
-            action_name=submission.active_job.action_name,
-            job_status=submission.active_job.status,
-            user_key=metric_user_key(user_id),
+            action_name=action_name,
+            job_id=job_id,
+            payload=payload,
+            source_message_id=message_id,
+            expected_updated_at=getattr(session, "updated_at", None),
         )
-        msg = _duplicate_submit_message(submission.active_job)
-        await reply_text(_client, message_id, msg)
-        _append_history(session, "assistant", msg)
-        await _store.save(user_id, session)
+    except StaleSessionError as exc:
+        await _reply_job_begin_error(session, user_id, message_id, exc)
+        return None
+    except InvalidJobPayloadError as exc:
+        log.warning("[JOB] skill action payload rejected; falling back to minimal payload: %s", exc)
+        try:
+            submission = await _job_controller.begin_running(
+                session,
+                user_id=user_id,
+                skill_name=skill.name,
+                action_name=action_name,
+                job_id=job_id,
+                payload=_minimal_skill_action_job_payload(action_name),
+                source_message_id=message_id,
+                expected_updated_at=getattr(session, "updated_at", None),
+            )
+        except (StaleSessionError, InvalidJobPayloadError) as fallback_exc:
+            await _reply_job_begin_error(session, user_id, message_id, fallback_exc)
+            return None
+    if submission.duplicate:
+        await _reply_duplicate_job(session, user_id, message_id, skill, submission)
         return None
     return submission
 
@@ -1215,6 +1284,23 @@ async def _handle_running_job_turn(session, user_id: str, message_id: str, text:
     return True
 
 
+async def _handle_awaiting_confirmation_turn(session, user_id: str, message_id: str, text: str, intent: TurnIntent) -> bool:
+    if intent in {TurnIntent.confirm, TurnIntent.modify_param}:
+        return False
+    _append_history(session, "user", text)
+    if intent == TurnIntent.cancel:
+        msg = "已取消这次生成。需要其他帮助随时告诉我。"
+        _exit_skill_context(session)
+    elif intent == TurnIntent.chitchat:
+        msg = _response_composer().skill_chitchat(completed=False)
+    else:
+        msg = _awaiting_confirmation_boundary_msg()
+    _append_history(session, "assistant", msg)
+    await reply_text(_client, message_id, msg)
+    await _store.save(user_id, session)
+    return True
+
+
 # 飞书群里 @mention 在 content.text 里渲染为 "@_user_N" 占位符
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+\s*")
 
@@ -1354,6 +1440,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
     if phase == ConversationPhase.running_job:
         if await _handle_running_job_turn(session, user_id, message_id, text, turn.intent):
+            return
+    if phase == ConversationPhase.awaiting_confirmation:
+        if await _handle_awaiting_confirmation_turn(session, user_id, message_id, text, turn.intent):
             return
 
     if await _handle_duplicate_message_redelivery(session, user_id, message_id):
@@ -1676,6 +1765,27 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
             await _send_skill_action_artifact(message_id, obs)
             await _maybe_send_skill_image_by_file_id(skill, message_id, obs)
+            job_id = _extract_job_id(obs.data, skill)
+            if job_id:
+                payload = _skill_action_job_payload(action.action_params)
+                submission = await _begin_existing_skill_action_job(
+                    session,
+                    user_id,
+                    message_id,
+                    skill,
+                    job_id,
+                    payload,
+                    action.action_name or "call_skill_action",
+                )
+                if submission is None:
+                    return
+                session.completed = False
+                session.pending_param = None
+                session.loaded_resources = {}
+                await _store.save(user_id, session)
+                await reply_text(_client, message_id, "✅ 已开始生成，预计 30-60 秒，请稍候…")
+                _start_background_worker(user_id, submission.active_job, message_id)
+                return
             if await _maybe_poll_skill_job(skill, message_id, obs):
                 session.pending_param = None
                 session.loaded_resources = {}

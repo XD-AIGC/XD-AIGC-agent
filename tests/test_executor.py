@@ -105,6 +105,33 @@ async def test_poll_existing_job_skips_submit():
 
 
 @pytest.mark.asyncio
+async def test_poll_existing_job_treats_read_timeout_as_pending():
+    poll_resp = _resp(200, json_data={"status": "completed", "images": [{"url": "http://x/result.png"}]})
+
+    with patch("src.skill.executor.allowed_client") as mock_cli:
+        async_cli = AsyncMock()
+        async_cli.get = AsyncMock(side_effect=[
+            httpx.ReadTimeout("slow poll response"),
+            poll_resp,
+        ])
+        mock_cli.return_value.__aenter__.return_value = async_cli
+        result = await poll_existing_job(_poll_skill(), "abc")
+    assert result.kind == "url"
+    assert result.result_url == "http://x/result.png"
+    assert async_cli.get.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_poll_existing_job_does_not_hide_non_read_timeouts():
+    with patch("src.skill.executor.allowed_client") as mock_cli:
+        async_cli = AsyncMock()
+        async_cli.get = AsyncMock(side_effect=httpx.ConnectTimeout("cannot connect"))
+        mock_cli.return_value.__aenter__.return_value = async_cli
+        with pytest.raises(httpx.ConnectTimeout):
+            await poll_existing_job(_poll_skill(), "abc")
+
+
+@pytest.mark.asyncio
 async def test_poll_backend_failed_status():
     submit_resp = _resp(200, json_data={"v2JobId": "abc"})
     poll_resp = _resp(200, json_data={"status": "failed", "error": "Mivo rate limit"})

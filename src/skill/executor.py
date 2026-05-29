@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import httpx
+
 from src.config import TOOLBOX_BASE_URL
 from src.http_client.allowlist import allowed_client
 from src.skill.schema import HttpBackend, PollBackend, Skill
@@ -79,7 +81,11 @@ async def _poll_existing(api: PollBackend, job_id: str) -> ExecuteResult:
             if asyncio.get_event_loop().time() > deadline:
                 raise SkillExecutionError(f"任务 {job_id} 轮询超时（{api.poll_timeout_sec}s）")
             await asyncio.sleep(api.poll_interval_sec)
-            poll_resp = await client.get(poll_url)
+            try:
+                poll_resp = await client.get(poll_url, timeout=min(api.poll_timeout_sec, 30.0))
+            except httpx.ReadTimeout:
+                log.info("[POLL] %s status=pending reason=read_timeout", job_id)
+                continue
             poll_resp.raise_for_status()
             poll_data = poll_resp.json()
             status = poll_data.get(api.status_field)

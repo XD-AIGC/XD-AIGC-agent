@@ -74,7 +74,11 @@ class StateMachine:
             return Transition(ConversationPhase.idle, [SideEffect.clear_context, SideEffect.reply_cancelled])
         if intent == TurnIntent.modify_param:
             return Transition(ConversationPhase.collecting, [SideEffect.invoke_skill_runtime], True)
-        return Transition(ConversationPhase.awaiting_confirmation, [SideEffect.invoke_skill_runtime], True)
+        if intent == TurnIntent.ask_capability:
+            return Transition(ConversationPhase.awaiting_confirmation, [SideEffect.reply_capability])
+        if intent == TurnIntent.chitchat:
+            return Transition(ConversationPhase.awaiting_confirmation, [SideEffect.reply_chitchat])
+        return Transition(ConversationPhase.awaiting_confirmation, [SideEffect.reply_boundary])
 
     def _running_job(self, intent: TurnIntent) -> Transition:
         if intent == TurnIntent.cancel:

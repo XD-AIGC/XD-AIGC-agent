@@ -33,6 +33,22 @@ def test_awaiting_confirmation_confirm_submits_job():
     assert transition.side_effects == [SideEffect.submit_job]
 
 
+def test_awaiting_confirmation_unrelated_does_not_invoke_runtime():
+    transition = StateMachine().transition(ConversationPhase.awaiting_confirmation, TurnIntent.unrelated)
+
+    assert transition.next_phase == ConversationPhase.awaiting_confirmation
+    assert transition.side_effects == [SideEffect.reply_boundary]
+    assert not transition.allow_skill_runtime
+
+
+def test_awaiting_confirmation_modify_allows_runtime():
+    transition = StateMachine().transition(ConversationPhase.awaiting_confirmation, TurnIntent.modify_param)
+
+    assert transition.next_phase == ConversationPhase.collecting
+    assert transition.side_effects == [SideEffect.invoke_skill_runtime]
+    assert transition.allow_skill_runtime
+
+
 def test_running_job_unrelated_keeps_user_in_running_job():
     transition = StateMachine().transition(ConversationPhase.running_job, TurnIntent.unrelated)
 

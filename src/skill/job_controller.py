@@ -81,10 +81,6 @@ class JobController:
         self._check_session_version(session, expected_updated_at)
         normalized_payload = self._validate_payload(payload)
 
-        session_job = self._duplicate_from_session(session, source_message_id, skill_name)
-        if session_job is not None:
-            return SubmitJobResult(active_job=session_job, created=False, duplicate=True)
-
         active_job = ActiveJob(
             job_id=self._job_id_factory(),
             skill_name=skill_name,
@@ -94,6 +90,45 @@ class JobController:
             status="submitted",
             started_at=self._now(),
         )
+        return await self._reserve_or_apply(session, user_id, source_message_id, skill_name, active_job)
+
+    async def begin_running(
+        self,
+        session: Any,
+        *,
+        user_id: str,
+        skill_name: str,
+        action_name: str,
+        job_id: str,
+        payload: dict[str, Any],
+        source_message_id: str,
+        expected_updated_at: float | None = None,
+    ) -> SubmitJobResult:
+        self._check_session_version(session, expected_updated_at)
+        normalized_payload = self._validate_payload(payload)
+
+        active_job = ActiveJob(
+            job_id=job_id,
+            skill_name=skill_name,
+            action_name=action_name,
+            payload=normalized_payload,
+            source_message_id=source_message_id,
+            status="running",
+            started_at=self._now(),
+        )
+        return await self._reserve_or_apply(session, user_id, source_message_id, skill_name, active_job)
+
+    async def _reserve_or_apply(
+        self,
+        session: Any,
+        user_id: str,
+        source_message_id: str,
+        skill_name: str,
+        active_job: ActiveJob,
+    ) -> SubmitJobResult:
+        session_job = self._duplicate_from_session(session, source_message_id, skill_name)
+        if session_job is not None:
+            return SubmitJobResult(active_job=session_job, created=False, duplicate=True)
 
         key = self.idempotency_key(user_id, source_message_id, skill_name)
         if not await self._try_reserve(key, active_job):
