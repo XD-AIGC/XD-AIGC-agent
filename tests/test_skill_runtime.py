@@ -90,6 +90,46 @@ async def test_skill_decide_uses_skill_runtime_action_schema(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_skill_decide_dedupes_current_message_with_v2_history(monkeypatch):
+    from src.conversation.session import ConversationSession, Message
+    from src.orchestrator import llm as llm_mod
+    from src.skill.runtime import SkillRuntimeAction
+
+    captured = {}
+
+    class _Message:
+        parsed = SkillRuntimeAction(action="reply", message="ok")
+
+    class _Choice:
+        message = _Message()
+
+    class _Completions:
+        async def parse(self, **kwargs):
+            captured["messages"] = kwargs["messages"]
+            return type("Resp", (), {"choices": [_Choice()]})()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Beta:
+        chat = _Chat()
+
+    class _Client:
+        beta = _Beta()
+
+    monkeypatch.setattr(llm_mod, "_client", _Client())
+    session = ConversationSession(
+        skill_name="xd-town-studio",
+        chat_history=[Message(role="user", content="继续")],
+    )
+
+    await llm_mod.skill_decide("继续", session, _fake_skill())
+
+    user_messages = [msg for msg in captured["messages"] if msg["role"] == "user"]
+    assert [msg["content"] for msg in user_messages] == ["继续"]
+
+
+@pytest.mark.asyncio
 async def test_complete_action_retains_skill_context(monkeypatch):
     from src import main as main_mod
     from src.conversation.session import ConversationPhase, ConversationSession
