@@ -6,7 +6,7 @@ from src.conversation.options import OptionSet
 
 # 9 个 action：
 #   Router only:   select_skill, reply (greeting), out_of_scope
-#   Skill only:    lookup_characters, lookup_options, call_skill_action, submit, exit_skill
+#   Skill only:    lookup_characters, lookup_options, call_skill_action, await_confirmation, submit, exit_skill
 #   通用:          ask_param, reply
 Action = Literal[
     "select_skill",
@@ -14,6 +14,7 @@ Action = Literal[
     "lookup_options",
     "call_skill_action",
     "ask_param",
+    "await_confirmation",
     "submit",
     "exit_skill",
     "reply",

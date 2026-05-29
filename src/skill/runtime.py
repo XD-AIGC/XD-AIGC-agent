@@ -12,6 +12,7 @@ SkillRuntimeActionName = Literal[
     "lookup_options",
     "call_skill_action",
     "ask_param",
+    "await_confirmation",
     "submit",
     "complete",
     "exit_skill",
