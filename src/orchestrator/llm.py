@@ -53,6 +53,12 @@ def _format_chat_history(chat_history: list) -> list[dict]:
     return messages
 
 
+def _message_field(message, field: str):
+    if isinstance(message, dict):
+        return message.get(field)
+    return getattr(message, field, None)
+
+
 async def router_decide(user_message: str, session: UserSession) -> BotAction:
     skills = get_registry()
     skill_list = _format_router_skills(skills)
@@ -88,8 +94,8 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
     # models infer malformed values such as "33" or "billbill".
     if not (
         session.chat_history
-        and session.chat_history[-1].get("role") == "user"
-        and session.chat_history[-1].get("content") == user_message
+        and _message_field(session.chat_history[-1], "role") == "user"
+        and _message_field(session.chat_history[-1], "content") == user_message
     ):
         messages.append({"role": "user", "content": user_message})
     resp = await _client.beta.chat.completions.parse(
