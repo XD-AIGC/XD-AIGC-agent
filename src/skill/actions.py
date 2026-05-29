@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from src.config import TOOLBOX_BASE_URL
 from src.http_client.allowlist import allowed_client
+from src.skill.observation import ObservationReducer, ObservationStatus
 from src.skill.schema import HttpBackend, HttpResource, PollBackend, Skill
 
 
@@ -35,20 +36,28 @@ class SkillHttpAction(BaseModel):
 
 @dataclass
 class SkillActionObservation:
-    status: Literal["success", "error"]
+    status: ObservationStatus
     summary: str
     data: Any = None
+    data_schema_id: str | None = None
+    source_name: str | None = None
     artifact: dict[str, Any] = field(default_factory=dict)
+    next_actions: list[str] = field(default_factory=list)
+    stop_condition: str | None = None
     content_bytes: bytes | None = None
 
     def for_prompt(self) -> str:
-        payload = {
-            "status": self.status,
-            "summary": self.summary,
-            "data": _truncate_data(self.data),
-            "artifact": self.artifact,
-        }
-        return json.dumps(payload, ensure_ascii=False, default=str)
+        observation = ObservationReducer().reduce(
+            status=self.status,
+            summary=self.summary,
+            data=_truncate_data(self.data),
+            artifacts=self.artifact,
+            data_schema_id=self.data_schema_id,
+            source_name=self.source_name,
+            next_actions=self.next_actions,
+            stop_condition=self.stop_condition,
+        )
+        return observation.model_dump_json(exclude_none=False)
 
 
 class SkillActionError(Exception):
@@ -141,6 +150,7 @@ async def execute_skill_action(
             status="success",
             summary=f"{action.name} 返回图片 ({content_type}, {len(resp.content)} bytes)",
             artifact={"kind": "image_binary", "content_type": content_type, "byte_count": len(resp.content)},
+            data_schema_id="image.binary",
             content_bytes=resp.content,
         )
 
@@ -149,6 +159,7 @@ async def execute_skill_action(
         status="success",
         summary=f"{action.name} 调用成功",
         data=data,
+        source_name=action.name,
     )
 
 
@@ -255,3 +266,4 @@ def _truncate_data(data: Any) -> Any:
     if len(text) <= _MAX_TEXT_CHARS:
         return data
     return text[:_MAX_TEXT_CHARS] + "...[truncated]"
+
