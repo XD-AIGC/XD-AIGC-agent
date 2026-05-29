@@ -387,6 +387,17 @@ def _missing_required_param_names(skill: Skill, collected_params: dict) -> list[
     ]
 
 
+def _is_ready_for_backend_submit(skill: Skill | None, session) -> bool:
+    if (
+        skill is None
+        or not isinstance(skill.api, PollBackend)
+        or session.mode != "skill"
+        or getattr(session, "completed", False)
+    ):
+        return False
+    return not _missing_required_param_names(skill, session.collected_params)
+
+
 async def _prepare_result_reply(result) -> _PreparedResultReply:
     """Prepare expensive result artifacts once; caller may retry only the final reply."""
     if result.kind == "binary":
@@ -1424,6 +1435,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     lookup_count = 0
     skill_action_count = 0
     repeated_skill_action_count = 0
+    ready_reply_count = 0
     current_text = text
     # 把本轮用户原始输入加进 history（仅一次，loop 内部 lookup continue 时不重复加）
     _append_history(session, "user", text)
@@ -1517,6 +1529,24 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
         if action.action == "reply":
             msg = action.message or ""
+            skill = get_registry().get(session.skill_name) if session.skill_name else None
+            if _is_ready_for_backend_submit(skill, session):
+                ready_reply_count += 1
+                if ready_reply_count > 2:
+                    log.warning("[SKILL_ACTION] ready skill ended with reply instead of submit skill=%s", session.skill_name)
+                    await reply_text(_client, message_id, "生成任务没有成功提交，请重新描述需求或稍后再试。")
+                    await _store.save(user_id, session)
+                    return
+                current_text = (
+                    f"[当前 skill 的必填参数已经收齐："
+                    f"{json.dumps(session.collected_params, ensure_ascii=False)}。"
+                    "action=reply 只会发文字，不会创建后端任务，所以不能作为终态。"
+                    "如果需要用户确认，请输出 await_confirmation；否则请立即输出真实的 submit，"
+                    "或按 SKILL.md 选择正确的 POST skill action 提交生成任务；"
+                    "不要再输出 reply。]"
+                )
+                await _store.save(user_id, session)
+                continue
             await reply_text(_client, message_id, msg)
             _append_history(session, "assistant", msg)
             await _store.save(user_id, session)
@@ -1554,6 +1584,17 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             full_msg = base_msg + _enum_options_block(skill, action.param_name)
             await reply_text(_client, message_id, full_msg)
             _append_history(session, "assistant", full_msg)
+            await _store.save(user_id, session)
+            return
+
+        if action.action == "await_confirmation":
+            msg = action.message or "请确认是否开始生成。"
+            if isinstance(session, ConversationSession):
+                session.phase = ConversationPhase.awaiting_confirmation
+                sync_legacy_fields(session)
+            session.pending_param = None
+            await reply_text(_client, message_id, msg)
+            _append_history(session, "assistant", msg)
             await _store.save(user_id, session)
             return
 

@@ -945,6 +945,111 @@ async def test_cached_get_skill_action_is_not_reexecuted(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ready_skill_reply_is_forced_to_real_submit(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import UserSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.executor import ExecuteResult
+    from src.skill.job_controller import JobController
+    from src.skill.schema import PollBackend, Skill, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = []
+
+        async def save(self, user_id, session):
+            self.saved.append((user_id, session.model_copy(deep=True)))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(side_effect=[
+        BotAction(action="reply", message="马上安排。"),
+        BotAction(action="submit", submit_payload={"topic": "coffee"}),
+    ])
+    execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
+    start_worker = Mock(return_value=True)
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=PollBackend(type="poll", submit_path="/api/jobs", poll_path_template="/api/jobs/{job_id}"),
+        params=[],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute", execute)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_worker)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+    monkeypatch.setattr(
+        main_mod,
+        "_job_controller",
+        JobController(redis=None, now=lambda: 100.0, job_id_factory=lambda: "job-1"),
+    )
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen", collected_params={"topic": "coffee"})
+
+    await main_mod._agentic_loop("生成海报", session, "user-1", "msg-1")
+
+    assert skill_decide.await_count == 2
+    assert "必填参数已经收齐" in skill_decide.await_args_list[1].args[0]
+    assert "action=reply 只会发文字" in skill_decide.await_args_list[1].args[0]
+    sent = [call.args[2] for call in reply_text.call_args_list]
+    assert sent == ["✅ 已开始生成，预计 30-60 秒，请稍候…"]
+    execute.assert_not_called()
+    start_worker.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ready_skill_can_enter_awaiting_confirmation(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.schema import PollBackend, Skill, SkillOutput, SkillParam
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session.model_copy(deep=True))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(
+        return_value=BotAction(action="await_confirmation", message="已改成横版，请确认是否生成。")
+    )
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=PollBackend(type="poll", submit_path="/api/jobs", poll_path_template="/api/jobs/{job_id}"),
+        params=[SkillParam(name="topic", type="text", prompt_to_user="主题")],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = ConversationSession(
+        phase=ConversationPhase.collecting,
+        mode="skill",
+        skill_name="xd-poster-gen",
+        collected_params={"topic": "coffee"},
+    )
+
+    await main_mod._agentic_loop("换成横版", session, "user-1", "msg-1")
+
+    reply_text.assert_called_once()
+    assert reply_text.call_args[0][2] == "已改成横版，请确认是否生成。"
+    saved = store.saved[1]
+    assert saved.phase == ConversationPhase.awaiting_confirmation
+    assert saved.mode == "skill"
+
+
+@pytest.mark.asyncio
 async def test_submit_acknowledges_background_job(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession

@@ -37,7 +37,7 @@
           }
         },
         {
-          "action": "reply",
+          "action": "await_confirmation",
           "message": "已改成横版，请确认是否生成。"
         }
       ],
@@ -63,7 +63,7 @@
           }
         },
         "v2_optional": {
-          "phase": "collecting",
+          "phase": "awaiting_confirmation",
           "last_options_present": false
         }
       }
