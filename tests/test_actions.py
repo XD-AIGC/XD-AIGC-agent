@@ -5,7 +5,7 @@ import httpx
 from unittest.mock import AsyncMock, patch
 
 from src.skill.actions import build_action_catalog, execute_skill_action
-from src.skill.schema import PollBackend, Skill, SkillOutput
+from src.skill.schema import HttpBackend, PollBackend, Skill, SkillActionMetadata, SkillOutput
 
 
 SKILL_MD = """
@@ -36,6 +36,24 @@ def _skill() -> Skill:
     )
 
 
+def _skill_with_action_schema() -> Skill:
+    return Skill(
+        name="poster",
+        description="poster",
+        api=HttpBackend(
+            type="http",
+            base_url="http://localhost:8090",
+            endpoint_path="/api/submit",
+            method="POST",
+            content_type="application/json",
+        ),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="```http\nGET /api/styles\n```",
+        actions=[SkillActionMetadata(name="get_styles", data_schema_id="poster.styles")],
+    )
+
+
 def _resp(status: int, json_data=None, content: bytes = b"", content_type: str = "application/json") -> httpx.Response:
     req = httpx.Request("GET", "http://localhost:8090/")
     headers = {"content-type": content_type}
@@ -53,6 +71,12 @@ def test_build_action_catalog_extracts_relative_http_blocks_only():
     assert "manifest_submit" in catalog
     assert "manifest_poll" in catalog
     assert all("artdam" not in action.path_template for action in catalog.values())
+
+
+def test_build_action_catalog_applies_manifest_data_schema_id():
+    catalog = build_action_catalog(_skill_with_action_schema())
+
+    assert catalog["get_styles"].data_schema_id == "poster.styles"
 
 
 @pytest.mark.asyncio
@@ -99,3 +123,20 @@ async def test_execute_skill_action_renders_path_params_safely():
 async def test_execute_skill_action_rejects_unknown_action():
     with pytest.raises(Exception, match="未知或未允许"):
         await execute_skill_action(_skill(), "curl_anything", {})
+
+
+@pytest.mark.asyncio
+async def test_execute_skill_action_uses_manifest_data_schema_id():
+    mock_resp = _resp(200, json_data=[{"style": "comic"}])
+    with patch("src.skill.actions.allowed_client") as mock_cli:
+        async_cli = AsyncMock()
+        async_cli.request = AsyncMock(return_value=mock_resp)
+        mock_cli.return_value.__aenter__.return_value = async_cli
+
+        obs = await execute_skill_action(_skill_with_action_schema(), "get_styles", {})
+
+    assert obs.data_schema_id == "poster.styles"
+    assert json.loads(obs.for_prompt())["data"] == {
+        "schema_id": "poster.styles",
+        "payload": {"items": [{"style": "comic"}]},
+    }
