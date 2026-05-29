@@ -15,7 +15,7 @@
 | **P1 状态机** | State machine + TurnClassifier + ResponseComposer | 1 | 中（行为可见）|
 | **P2 异步运行时** | JobController 拆三个 PR：idempotency → worker → cancel/timeout | 3 | 高（依赖 R1 / R3）|
 | **P3 Prompt 精简** | SkillRuntime + 收窄 SkillRuntimeAction | 1 | 中（prompt 回归）|
-| **P4 Eval + 灰度** | transcript eval 全绿 + runtime dry-run 标签；真实 dispatch 另起 PR | 1 | 中（线上回归）|
+| **P4 Eval + 灰度** | transcript eval 全绿 + runtime dry-run 标签 + 部署级回滚 SOP | 1 | 中（线上回归）|
 
 约束：每个 PR 体积 ≤ 500 行 diff；CI 必须包含 `bash ci/check-banned-apis.sh`。
 
@@ -142,9 +142,10 @@
 
 - transcript eval ≥ 12 条全绿（含 S27 行为轨迹断言）
 - L20-1 dry-run 标签：`AGENT_RUNTIME_DRY_RUN_TARGET=v2`（按 user_id hash 分桶；不切换执行路径）
-- 灰度 10% → 1 周观察 → 50% → 1 周 → 100%
+- 不做进程内 v1/v2 dispatch；v1 不是独立执行器，代码级回滚靠部署上一版镜像/commit（详 `docs/RUNTIME-DRY-RUN.md` §8）
+- 灰度 10% → 1 周观察 → 50% → 1 周 → 100% + 真实 bot smoke test
 - 监控：`phase=running_job` 异常率、duplicate submit 计数、delayed reply 失败率
-- 回退 SOP：flip flag 回 v1，不清 Redis，靠 TTL=1h 自然消化；接受 `running_job` 通知丢失（D2）
+- 回退 SOP：先 flip 标签回 v1；必要时部署上一版代码，不清 Redis，靠 TTL=1h 自然消化；接受 `running_job` 通知丢失（D2）
 - 跑稳 2 周后：删 v1 兼容 mirror 字段（schema_version=3，单独 PR）
 
 **验收**：
@@ -171,7 +172,7 @@
 
 ## 待确认问题（PLAN 层）
 
-1. 真实 runtime dispatch 的灰度比例阈值（10/50/100% 是建议，可调）
+1. dry-run 标签灰度比例阈值（10/50/100% 是建议，可调）
 2. `/取消`、`/重新开始`、`/帮助` 是否要作为用户可见斜杠命令？（当前用 deterministic classifier）
 3. 运行中是否需要中间进度消息（如"已生成 step1，正在合成…"），还是只在开始和完成时回？
 
