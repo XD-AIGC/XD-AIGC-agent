@@ -196,10 +196,12 @@ async def test_background_poll_discards_cancelled_local_job_result(monkeypatch):
     store = _FakeStore(_session(cancelled))
     poll_existing_job = AsyncMock(return_value=ExecuteResult(kind="text", text="late result"))
     reply_text = AsyncMock()
+    record_metric = Mock()
 
     monkeypatch.setattr(main_mod, "_store", store)
     monkeypatch.setattr(main_mod, "poll_existing_job", poll_existing_job)
     monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
     monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": _skill()})
 
     await main_mod._background_poll("user-1", active_job, "msg-source")
@@ -207,6 +209,77 @@ async def test_background_poll_discards_cancelled_local_job_result(monkeypatch):
     poll_existing_job.assert_awaited_once()
     reply_text.assert_not_called()
     assert store.session.active_job.cancelled_locally is True
+    record_metric.assert_called_once_with(
+        "running_job_anomaly",
+        stage="complete",
+        reason="active_job_mismatch",
+        skill_name="xd-poster-gen",
+        job_status="running",
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_background_job_records_delayed_reply_failure(monkeypatch):
+    from src import main as main_mod
+
+    active_job = _active_job("running")
+    store = _FakeStore(_session(active_job))
+    send_execute_result = AsyncMock(return_value=False)
+    reply_text = AsyncMock(return_value=True)
+    record_metric = Mock()
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_send_execute_result", send_execute_result)
+    monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
+
+    await main_mod._complete_background_job(
+        "user-1",
+        active_job,
+        "msg-source",
+        _skill(),
+        ExecuteResult(kind="text", text="done"),
+    )
+
+    record_metric.assert_any_call(
+        "delayed_reply_failure",
+        stage="send_result",
+        skill_name="xd-poster-gen",
+        job_status="running",
+        result_kind="text",
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_background_job_records_text_reply_failure_without_stubbing_send(monkeypatch):
+    from src import main as main_mod
+
+    active_job = _active_job("running")
+    store = _FakeStore(_session(active_job))
+    reply_text = AsyncMock(return_value=False)
+    record_metric = Mock()
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
+
+    await main_mod._complete_background_job(
+        "user-1",
+        active_job,
+        "msg-source",
+        _skill(),
+        ExecuteResult(kind="text", text="done"),
+    )
+
+    record_metric.assert_any_call(
+        "delayed_reply_failure",
+        stage="send_result",
+        skill_name="xd-poster-gen",
+        job_status="running",
+        result_kind="text",
+    )
 
 
 @pytest.mark.asyncio

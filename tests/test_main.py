@@ -924,6 +924,7 @@ async def test_submit_duplicate_job_status_message_does_not_execute(monkeypatch,
 
     store = FakeStore()
     reply_text = AsyncMock()
+    record_metric = Mock()
     skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"topic": "coffee"}))
     execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
     fake_skill = Skill(
@@ -936,6 +937,7 @@ async def test_submit_duplicate_job_status_message_does_not_execute(monkeypatch,
     )
     monkeypatch.setattr(main_mod, "_store", store)
     monkeypatch.setattr(main_mod, "_job_controller", DuplicateJobController())
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
     monkeypatch.setattr(main_mod, "reply_text", reply_text)
     monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
     monkeypatch.setattr(main_mod, "execute", execute)
@@ -949,6 +951,12 @@ async def test_submit_duplicate_job_status_message_does_not_execute(monkeypatch,
     reply_text.assert_called_once()
     assert expected in reply_text.call_args[0][2]
     assert store.saved[0] == "user-1"
+    record_metric.assert_called_once_with(
+        "duplicate_submit",
+        skill_name="xd-poster-gen",
+        action_name="submit",
+        job_status=status,
+    )
 
 
 @pytest.mark.asyncio
