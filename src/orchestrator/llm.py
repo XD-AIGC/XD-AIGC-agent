@@ -37,7 +37,7 @@ def _format_router_skills(skills: dict[str, Skill]) -> str:
 def _format_loaded_resources(loaded: dict[str, str]) -> str:
     if not loaded:
         return ""
-    parts = ["【已加载的资源（不要重复 lookup）】"]
+    parts = ["【已加载的资源 / skill action 结果（不要重复 lookup 或 call_skill_action）】"]
     for name, content in loaded.items():
         parts.append(f"\n### {name}\n{content}\n")
     return "\n".join(parts)
