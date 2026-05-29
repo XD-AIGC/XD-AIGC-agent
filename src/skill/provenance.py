@@ -52,6 +52,9 @@ def filter_updated_params(
         if _is_valid_option_or_enum_value(key, new_value, param, session):
             accepted[key] = new_value
             continue
+        if param is not None and param.type == "json" and _value_appears_in_trusted_sources(new_value, trusted_text, session):
+            accepted[key] = new_value
+            continue
         if _value_appears_in_text(new_value, user_text):
             accepted[key] = new_value
             continue
@@ -94,6 +97,44 @@ def _value_appears_in_text(value: Any, text: str) -> bool:
         return False
     compact_text = _compact(text)
     return all(_compact(item) and _compact(item) in compact_text for item in items)
+
+
+def _value_appears_in_trusted_sources(value: Any, trusted_text: str, session: Any) -> bool:
+    source_text = "\n".join(_trusted_source_texts(trusted_text, session))
+    if not source_text:
+        return False
+    return _value_appears_in_text(value, source_text) or _structured_value_appears_in_text(value, source_text)
+
+
+def _trusted_source_texts(trusted_text: str, session: Any) -> list[str]:
+    texts = [trusted_text] if trusted_text else []
+    loaded = getattr(session, "loaded_resources", {}) or {}
+    if isinstance(loaded, dict):
+        texts.extend(str(value) for value in loaded.values() if value)
+    return texts
+
+
+def _structured_value_appears_in_text(value: Any, text: str) -> bool:
+    tokens = _structured_identity_tokens(value)
+    if not tokens:
+        return False
+    compact_text = _compact(text)
+    return all(_compact(token) and _compact(token) in compact_text for token in tokens)
+
+
+def _structured_identity_tokens(value: Any) -> list[str]:
+    if isinstance(value, list):
+        tokens: list[str] = []
+        for item in value:
+            item_tokens = _structured_identity_tokens(item)
+            if not item_tokens:
+                return []
+            tokens.extend(item_tokens)
+        return tokens
+    if not isinstance(value, dict):
+        return []
+    token = value.get("key") or value.get("id") or value.get("name") or value.get("refImage")
+    return [str(token)] if token else []
 
 
 def _as_scalar_items(value: Any) -> list[str]:
