@@ -44,7 +44,7 @@ from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
 from src.config import AGENT_RUNTIME_DRY_RUN, FEISHU_APP_ID, FEISHU_APP_SECRET
-from src.monitoring import record_metric
+from src.monitoring import metric_user_key, record_metric
 from src.runtime_dry_run import choose_runtime_label
 import time
 
@@ -655,6 +655,7 @@ async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill
             skill_name=skill.name,
             action_name=submission.active_job.action_name,
             job_status=submission.active_job.status,
+            user_key=metric_user_key(user_id),
         )
         msg = _duplicate_submit_message(submission.active_job)
         await reply_text(_client, message_id, msg)
@@ -704,13 +705,14 @@ def _active_job_matches(current: ActiveJob | None, expected: ActiveJob) -> bool:
     )
 
 
-def _record_running_job_anomaly(stage: str, expected_job: ActiveJob, reason: str) -> None:
+def _record_running_job_anomaly(user_id: str, stage: str, expected_job: ActiveJob, reason: str) -> None:
     record_metric(
         "running_job_anomaly",
         stage=stage,
         reason=reason,
         skill_name=expected_job.skill_name,
         job_status=expected_job.status,
+        user_key=metric_user_key(user_id),
     )
 
 
@@ -743,6 +745,10 @@ def _result_artifacts(result: ExecuteResult) -> dict:
     if file_id:
         artifacts["file_id"] = file_id
     return artifacts
+
+
+def _result_reply_channel(result: ExecuteResult) -> str:
+    return "text" if result.kind == "text" else "image"
 
 
 def _retry_payload(session) -> dict:
@@ -864,7 +870,7 @@ async def _persist_background_running_job(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), expected_job):
-            _record_running_job_anomaly("persist_running", expected_job, "active_job_mismatch")
+            _record_running_job_anomaly(user_id, "persist_running", expected_job, "active_job_mismatch")
             return False
         session.active_job = running_job
         session.phase = ConversationPhase.running_job
@@ -882,7 +888,7 @@ async def _complete_background_job(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
-            _record_running_job_anomaly("complete", current_job, "active_job_mismatch")
+            _record_running_job_anomaly(user_id, "complete", current_job, "active_job_mismatch")
             return
         sent_result = await _send_execute_result_with_retry(message_id, result, skill)
         if not sent_result:
@@ -896,6 +902,8 @@ async def _complete_background_job(
                 skill_name=current_job.skill_name,
                 job_status=current_job.status,
                 result_kind=result.kind,
+                reply_channel=_result_reply_channel(result),
+                user_key=metric_user_key(user_id),
             )
             if isinstance(skill.api, PollBackend):
                 session.active_job = current_job.model_copy(
@@ -934,6 +942,8 @@ async def _complete_background_job(
                 skill_name=current_job.skill_name,
                 job_status=current_job.status,
                 result_kind=result.kind,
+                reply_channel="text",
+                user_key=metric_user_key(user_id),
             )
         await _save_conversation_session(user_id, session)
 
@@ -947,7 +957,7 @@ async def _handle_background_skill_error(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
-            _record_running_job_anomaly("skill_error", current_job, "active_job_mismatch")
+            _record_running_job_anomaly(user_id, "skill_error", current_job, "active_job_mismatch")
             return
         if _is_timeout_error(exc):
             session.active_job = current_job.model_copy(
@@ -976,7 +986,7 @@ async def _handle_background_unexpected_error(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
-            _record_running_job_anomaly("unexpected_error", current_job, "active_job_mismatch")
+            _record_running_job_anomaly(user_id, "unexpected_error", current_job, "active_job_mismatch")
             return
         _job_controller.mark_failed(session, current_job, observation={"error": str(exc)})
         session.completed = False
@@ -1096,6 +1106,7 @@ async def _handle_running_job_turn(session, user_id: str, message_id: str, text:
                 reason="missing_active_job",
                 skill_name=session.skill_name,
                 job_status="missing",
+                user_key=metric_user_key(user_id),
             )
         return False
     if active_job.status == "timeout":

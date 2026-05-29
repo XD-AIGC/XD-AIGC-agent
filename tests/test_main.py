@@ -956,6 +956,7 @@ async def test_submit_duplicate_job_status_message_does_not_execute(monkeypatch,
         skill_name="xd-poster-gen",
         action_name="submit",
         job_status=status,
+        user_key="u_c6c289e49e9c",
     )
 
 

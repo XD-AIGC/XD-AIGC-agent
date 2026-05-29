@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
 
 log = logging.getLogger(__name__)
+
+
+def metric_user_key(user_id: str) -> str:
+    """Return a stable non-raw user key for log-only rollout attribution."""
+    digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:12]
+    return f"u_{digest}"
 
 
 def record_metric(name: str, **fields: Any) -> None:
