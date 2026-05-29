@@ -89,6 +89,41 @@ def test_provenance_rejects_unknown_param_key_even_with_text_match():
     assert rejected == {"unknownField": "unknown_param"}
 
 
+def test_provenance_allows_action_artifact_id_from_trusted_text():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+    skill = _skill([SkillParam(name="actionDesc", type="text", prompt_to_user="动作")])
+
+    accepted, rejected = filter_updated_params(
+        {"fileId": "6a"},
+        session=session,
+        skill=skill,
+        user_text="继续",
+        trusted_text='{"data":{"schema_id":"image.fileId","payload":{"fileId":"6a"}}}',
+    )
+
+    assert accepted == {"fileId": "6a"}
+    assert rejected == {}
+
+
+def test_provenance_rejects_action_artifact_id_without_trusted_text():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+    skill = _skill([SkillParam(name="actionDesc", type="text", prompt_to_user="动作")])
+
+    accepted, rejected = filter_updated_params(
+        {"fileId": "6a"},
+        session=session,
+        skill=skill,
+        user_text="继续",
+    )
+
+    assert accepted == {}
+    assert rejected == {"fileId": "unknown_param"}
+
+
 def test_provenance_rejects_new_free_text_without_user_text_match():
     from src.skill.provenance import filter_updated_params
 
