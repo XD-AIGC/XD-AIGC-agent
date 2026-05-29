@@ -14,6 +14,12 @@ def test_classifier_keeps_completed_edits_in_skill_runtime_path():
     assert result.intent == TurnIntent.modify_param
 
 
+def test_classifier_keeps_awaiting_confirmation_edits_in_skill_runtime_path():
+    result = TurnClassifier().classify("换成横版", phase=ConversationPhase.awaiting_confirmation)
+
+    assert result.intent == TurnIntent.modify_param
+
+
 def test_classifier_treats_completed_date_question_as_unrelated():
     result = TurnClassifier().classify("hello, 今天是周几啊", phase=ConversationPhase.completed)
 

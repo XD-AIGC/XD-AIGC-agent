@@ -40,6 +40,9 @@ class ResponseComposer:
             return "我还在上一个任务里。要继续这个任务、再做一张相同的、调整哪里，还是换别的需求？"
         return "我还在当前任务里。要继续、调整参数，还是换别的需求？"
 
+    def awaiting_confirmation_boundary(self) -> str:
+        return "我正在等你确认这次生成。请回复「确认」开始生成，或直接说明要修改哪里；如果不做了，可以回复「取消」。"
+
     def local_cancel(self) -> str:
         return "我已停止等待这次结果，后续即使完成也不会再发送。"
 

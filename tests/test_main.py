@@ -945,6 +945,201 @@ async def test_cached_get_skill_action_is_not_reexecuted(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_skill_action_job_starts_background_poll(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.actions import SkillActionObservation
+    from src.skill.schema import PollBackend, Skill, SkillOutput
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = []
+
+        async def save(self, user_id, session):
+            self.saved.append((user_id, session.model_copy(deep=True)))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(
+        action="call_skill_action",
+        action_name="generate",
+        action_params={"json": {"characters": ["annie"], "actionDesc": "野餐"}},
+    ))
+    execute_skill_action = AsyncMock(return_value=SkillActionObservation(
+        status="success",
+        summary="generate 调用成功",
+        data={"jobId": "backend-job"},
+        source_name="generate",
+    ))
+    poll_existing_job = AsyncMock()
+    start_background_worker = Mock(return_value=True)
+    fake_skill = Skill(
+        name="xd-town-studio",
+        description="角色场景图",
+        api=PollBackend(type="poll", submit_path="/api/generate", poll_path_template="/api/poll/{job_id}"),
+        params=[],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="```http\nPOST /api/generate\n```",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute_skill_action", execute_skill_action)
+    monkeypatch.setattr(main_mod, "poll_existing_job", poll_existing_job)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_background_worker)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-town-studio": fake_skill})
+
+    session = ConversationSession(
+        phase=ConversationPhase.awaiting_confirmation,
+        skill_name="xd-town-studio",
+        collected_params={"characters": ["annie"], "actionDesc": "野餐"},
+        mode="skill",
+    )
+
+    await main_mod._agentic_loop("确认", session, "user-1", "msg-1")
+
+    poll_existing_job.assert_not_called()
+    reply_text.assert_awaited_once()
+    assert "已开始生成" in reply_text.await_args.args[2]
+    assert session.phase == ConversationPhase.running_job
+    assert session.active_job is not None
+    assert session.active_job.job_id == "backend-job"
+    assert session.active_job.status == "running"
+    assert session.active_job.payload == {"characters": ["annie"], "actionDesc": "野餐"}
+    start_background_worker.assert_called_once_with("user-1", session.active_job, "msg-1")
+
+
+@pytest.mark.asyncio
+async def test_skill_action_job_uses_minimal_payload_when_action_payload_is_not_persistable(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.actions import SkillActionObservation
+    from src.skill.schema import PollBackend, Skill, SkillOutput
+
+    class FakeStore:
+        async def save(self, user_id, session):
+            self.session = session.model_copy(deep=True)
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(
+        action="call_skill_action",
+        action_name="generate",
+        action_params={"json": {"base64": "QUJDRA=="}},
+    ))
+    execute_skill_action = AsyncMock(return_value=SkillActionObservation(
+        status="success",
+        summary="generate 调用成功",
+        data={"jobId": "backend-job"},
+        source_name="generate",
+    ))
+    start_background_worker = Mock(return_value=True)
+    fake_skill = Skill(
+        name="xd-town-studio",
+        description="角色场景图",
+        api=PollBackend(type="poll", submit_path="/api/generate", poll_path_template="/api/poll/{job_id}"),
+        params=[],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="```http\nPOST /api/generate\n```",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute_skill_action", execute_skill_action)
+    monkeypatch.setattr(main_mod, "_start_background_worker", start_background_worker)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-town-studio": fake_skill})
+
+    session = ConversationSession(
+        phase=ConversationPhase.awaiting_confirmation,
+        skill_name="xd-town-studio",
+        collected_params={"characters": ["annie"], "actionDesc": "野餐"},
+        mode="skill",
+    )
+
+    await main_mod._agentic_loop("确认", session, "user-1", "msg-1")
+
+    assert session.active_job is not None
+    assert session.active_job.job_id == "backend-job"
+    assert session.active_job.payload == {"source": "skill_action", "action_name": "generate"}
+    start_background_worker.assert_called_once_with("user-1", session.active_job, "msg-1")
+    assert "已开始生成" in reply_text.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_awaiting_confirmation_chitchat_does_not_submit(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
+
+    class FakeStore:
+        async def save(self, user_id, session):
+            self.session = session.model_copy(deep=True)
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock()
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+
+    session = ConversationSession(
+        phase=ConversationPhase.awaiting_confirmation,
+        skill_name="xd-town-studio",
+        collected_params={"characters": ["annie"], "actionDesc": "野餐"},
+        mode="skill",
+    )
+
+    await main_mod._agentic_loop("喂", session, "user-1", "msg-1")
+
+    skill_decide.assert_not_called()
+    reply_text.assert_awaited_once()
+    assert "确认" in reply_text.await_args.args[2]
+    assert session.phase == ConversationPhase.awaiting_confirmation
+    assert session.active_job is None
+
+
+@pytest.mark.asyncio
+async def test_awaiting_confirmation_modify_enters_skill_runtime(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.schema import PollBackend, Skill, SkillOutput
+
+    class FakeStore:
+        async def save(self, user_id, session):
+            pass
+
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(return_value=BotAction(action="await_confirmation", message="改成横版了，请确认。"))
+    fake_skill = Skill(
+        name="xd-town-studio",
+        description="角色场景图",
+        api=PollBackend(type="poll", submit_path="/api/generate", poll_path_template="/api/poll/{job_id}"),
+        params=[],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="```http\nPOST /api/generate\n```",
+    )
+    monkeypatch.setattr(main_mod, "_store", FakeStore())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-town-studio": fake_skill})
+
+    session = ConversationSession(
+        phase=ConversationPhase.awaiting_confirmation,
+        skill_name="xd-town-studio",
+        collected_params={"characters": ["annie"], "actionDesc": "野餐"},
+        mode="skill",
+    )
+
+    await main_mod._agentic_loop("换成横版", session, "user-1", "msg-1")
+
+    skill_decide.assert_awaited_once()
+    assert reply_text.await_args.args[2] == "改成横版了，请确认。"
+    assert session.phase == ConversationPhase.awaiting_confirmation
+
+
+@pytest.mark.asyncio
 async def test_ready_skill_reply_is_forced_to_real_submit(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession
