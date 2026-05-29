@@ -226,6 +226,7 @@ async def test_background_poll_discards_cancelled_local_job_result(monkeypatch):
         reason="active_job_mismatch",
         skill_name="xd-poster-gen",
         job_status="running",
+        user_key="u_c6c289e49e9c",
     )
 
 
@@ -258,6 +259,8 @@ async def test_complete_background_job_records_delayed_reply_failure(monkeypatch
         skill_name="xd-poster-gen",
         job_status="running",
         result_kind="text",
+        reply_channel="text",
+        user_key="u_c6c289e49e9c",
     )
 
 
@@ -289,6 +292,45 @@ async def test_complete_background_job_records_text_reply_failure_without_stubbi
         skill_name="xd-poster-gen",
         job_status="running",
         result_kind="text",
+        reply_channel="text",
+        user_key="u_c6c289e49e9c",
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_background_job_records_image_reply_channel(monkeypatch):
+    from src import main as main_mod
+
+    active_job = _active_job("running")
+    store = _FakeStore(_session(active_job))
+    upload_image = AsyncMock(return_value="img-key")
+    reply_image = AsyncMock(return_value=False)
+    record_metric = Mock()
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "upload_image", upload_image)
+    monkeypatch.setattr(main_mod, "reply_image", reply_image)
+    monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
+
+    await main_mod._complete_background_job(
+        "user-1",
+        active_job,
+        "msg-source",
+        _skill(),
+        ExecuteResult(kind="binary", content_bytes=b"png"),
+    )
+
+    upload_image.assert_awaited_once()
+    assert reply_image.await_count == 2
+    record_metric.assert_any_call(
+        "delayed_reply_failure",
+        stage="send_result",
+        skill_name="xd-poster-gen",
+        job_status="running",
+        result_kind="binary",
+        reply_channel="image",
+        user_key="u_c6c289e49e9c",
     )
 
 
@@ -363,6 +405,8 @@ async def test_complete_background_job_keeps_running_when_result_reply_fails_aft
         skill_name="xd-poster-gen",
         job_status="running",
         result_kind="text",
+        reply_channel="text",
+        user_key="u_c6c289e49e9c",
     )
 
 
