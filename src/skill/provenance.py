@@ -30,6 +30,9 @@ def filter_updated_params(
         old_value = current.get(key)
         param = params.get(key)
 
+        if param is None:
+            rejected[key] = "unknown_param"
+            continue
         if old_exists and _same_value(old_value, new_value):
             accepted[key] = new_value
             continue
@@ -46,7 +49,7 @@ def filter_updated_params(
             rejected[key] = "existing_structured_value_changed_without_provenance"
             continue
 
-        accepted[key] = new_value
+        rejected[key] = "value_without_provenance"
     return accepted, rejected
 
 

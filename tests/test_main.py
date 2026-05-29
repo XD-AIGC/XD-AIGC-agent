@@ -737,7 +737,7 @@ async def test_ask_param_with_updated_value_continues_without_reasking(monkeypat
     from src import main as main_mod
     from src.orchestrator.schema import UserSession
     from src.orchestrator.schema import BotAction
-    from src.skill.schema import Skill, HttpBackend, SkillOutput
+    from src.skill.schema import Skill, HttpBackend, SkillOutput, SkillParam
 
     class FakeStore:
         def __init__(self):
@@ -756,7 +756,7 @@ async def test_ask_param_with_updated_value_continues_without_reasking(monkeypat
         name="xd-poster-gen",
         description="生成海报",
         api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
-        params=[],
+        params=[SkillParam(name="ratio", type="enum", values=["2:3", "3:2"], prompt_to_user="比例")],
         output=SkillOutput(type="text", display_as="feishu_text"),
         system_prompt_core="test",
     )

@@ -70,3 +70,54 @@ def test_provenance_allows_enum_value_declared_by_skill():
 
     assert accepted == {"ratio": "3:2"}
     assert rejected == {}
+
+
+def test_provenance_rejects_unknown_param_key_even_with_text_match():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+    skill = _skill([SkillParam(name="actionDesc", type="text", prompt_to_user="动作")])
+
+    accepted, rejected = filter_updated_params(
+        {"unknownField": "赛季更新"},
+        session=session,
+        skill=skill,
+        user_text="赛季更新",
+    )
+
+    assert accepted == {}
+    assert rejected == {"unknownField": "unknown_param"}
+
+
+def test_provenance_rejects_new_free_text_without_user_text_match():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+    skill = _skill([SkillParam(name="actionDesc", type="text", prompt_to_user="动作")])
+
+    accepted, rejected = filter_updated_params(
+        {"actionDesc": "慢悠悠生活"},
+        session=session,
+        skill=skill,
+        user_text="帮我做一张海报",
+    )
+
+    assert accepted == {}
+    assert rejected == {"actionDesc": "value_without_provenance"}
+
+
+def test_provenance_allows_new_free_text_from_user_text():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(mode="skill", skill_name="xd-poster-gen")
+    skill = _skill([SkillParam(name="actionDesc", type="text", prompt_to_user="动作")])
+
+    accepted, rejected = filter_updated_params(
+        {"actionDesc": "赛季更新"},
+        session=session,
+        skill=skill,
+        user_text="做一个赛季更新海报",
+    )
+
+    assert accepted == {"actionDesc": "赛季更新"}
+    assert rejected == {}
