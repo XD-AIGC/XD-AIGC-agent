@@ -4,6 +4,7 @@ import logging
 import re
 import lark_oapi as lark
 
+from dataclasses import dataclass
 from src.feishu.adapter import build_client, build_event_handler
 from src.feishu.reply import reply_text, reply_image
 from src.feishu.upload import upload_image
@@ -56,6 +57,12 @@ _user_locks: dict[str, asyncio.Lock] = {}
 _background_tasks: dict[str, asyncio.Task] = {}
 _turn_classifier = TurnClassifier()
 _state_machine = StateMachine()
+
+
+@dataclass(frozen=True)
+class _PreparedResultReply:
+    kind: str
+    value: str
 
 
 def _get_user_lock(user_id: str) -> asyncio.Lock:
@@ -361,16 +368,28 @@ def _enum_options_block(skill: Skill | None, param_name: str | None) -> str:
     return "\n".join(lines)
 
 
-async def _reply_with_result(message_id: str, result) -> bool:
-    """统一处理 ExecuteResult 三种返回：binary 直接上传；url 下载再上传；text 文字回复。"""
+async def _prepare_result_reply(result) -> _PreparedResultReply:
+    """Prepare expensive result artifacts once; caller may retry only the final reply."""
     if result.kind == "binary":
         uploaded_key = await upload_image(_client, result.content_bytes)
-        return bool(await reply_image(_client, message_id, uploaded_key))
-    elif result.kind == "url":
+        return _PreparedResultReply(kind="image", value=uploaded_key)
+    if result.kind == "url":
         img_bytes = await download_url(result.result_url)
         uploaded_key = await upload_image(_client, img_bytes)
-        return bool(await reply_image(_client, message_id, uploaded_key))
-    return bool(await reply_text(_client, message_id, result.text or "完成"))
+        return _PreparedResultReply(kind="image", value=uploaded_key)
+    return _PreparedResultReply(kind="text", value=result.text or "完成")
+
+
+async def _send_prepared_result_reply(message_id: str, prepared: _PreparedResultReply) -> bool:
+    if prepared.kind == "image":
+        return bool(await reply_image(_client, message_id, prepared.value))
+    return bool(await reply_text(_client, message_id, prepared.value))
+
+
+async def _reply_with_result(message_id: str, result) -> bool:
+    """统一处理 ExecuteResult 三种返回：binary 直接上传；url 下载再上传；text 文字回复。"""
+    prepared = await _prepare_result_reply(result)
+    return await _send_prepared_result_reply(message_id, prepared)
 
 
 async def _send_skill_action_artifact(message_id: str, obs: SkillActionObservation) -> bool:
@@ -432,13 +451,32 @@ async def _maybe_send_skill_image_by_file_id(skill: Skill, message_id: str, obs:
 
 
 async def _send_execute_result(message_id: str, result: ExecuteResult, skill: Skill) -> bool:
+    prepared = await _prepare_execute_result_reply(result, skill)
+    if prepared is None:
+        return False
+    return await _send_prepared_result_reply(message_id, prepared)
+
+
+async def _prepare_execute_result_reply(result: ExecuteResult, skill: Skill) -> _PreparedResultReply | None:
     if result.kind == "url" and not result.result_url:
         file_id = _extract_image_file_id(result.metadata)
         if file_id:
             obs = await execute_skill_action(skill, "get_image", {"path_params": {"fileId": file_id}})
-            await _send_skill_action_artifact(message_id, obs)
-            return bool(obs.artifact.get("sent_to_user"))
-    return await _reply_with_result(message_id, result)
+            if obs.content_bytes is None:
+                return None
+            uploaded_key = await upload_image(_client, obs.content_bytes)
+            return _PreparedResultReply(kind="image", value=uploaded_key)
+    return await _prepare_result_reply(result)
+
+
+async def _send_execute_result_with_retry(message_id: str, result: ExecuteResult, skill: Skill) -> bool:
+    prepared = await _prepare_execute_result_reply(result, skill)
+    if prepared is None:
+        return False
+    if await _send_prepared_result_reply(message_id, prepared):
+        return True
+    log.warning("[JOB] delayed result reply failed once; retrying skill=%s kind=%s", skill.name, result.kind)
+    return await _send_prepared_result_reply(message_id, prepared)
 
 
 async def _maybe_poll_skill_job(skill: Skill, message_id: str, obs: SkillActionObservation) -> bool:
@@ -846,8 +884,12 @@ async def _complete_background_job(
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
             _record_running_job_anomaly("complete", current_job, "active_job_mismatch")
             return
-        sent_result = await _send_execute_result(message_id, result, skill)
+        sent_result = await _send_execute_result_with_retry(message_id, result, skill)
         if not sent_result:
+            failure_observation = {
+                "reply_failed": True,
+                "result_kind": result.kind,
+            }
             record_metric(
                 "delayed_reply_failure",
                 stage="send_result",
@@ -855,6 +897,22 @@ async def _complete_background_job(
                 job_status=current_job.status,
                 result_kind=result.kind,
             )
+            if isinstance(skill.api, PollBackend):
+                session.active_job = current_job.model_copy(
+                    update={
+                        "status": "running",
+                        "last_poll_at": time.time(),
+                        "last_observation": failure_observation,
+                    }
+                )
+                session.phase = ConversationPhase.running_job
+            else:
+                _job_controller.mark_failed(session, current_job, observation=failure_observation)
+            session.completed = False
+            session.completed_result = None
+            sync_legacy_fields(session)
+            await _save_conversation_session(user_id, session)
+            return
         await _maybe_save_cached_step1(current_job.payload, result, user_id)
         session.pending_param = None
         session.loaded_resources = {}

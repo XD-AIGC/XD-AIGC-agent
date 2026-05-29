@@ -7,7 +7,7 @@ import pytest
 from src.conversation.session import ActiveJob, CompletedResult, ConversationPhase, ConversationSession
 from src.conversation.response import ResponseComposer
 from src.skill.executor import ExecuteResult, SkillExecutionError
-from src.skill.schema import PollBackend, Skill, SkillOutput
+from src.skill.schema import HttpBackend, PollBackend, Skill, SkillOutput
 
 
 class _FakeStore:
@@ -31,6 +31,17 @@ def _skill() -> Skill:
         name="xd-poster-gen",
         description="生成海报",
         api=PollBackend(type="poll", submit_path="/api/jobs", poll_path_template="/api/jobs/{job_id}"),
+        params=[],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+
+
+def _http_skill() -> Skill:
+    return Skill(
+        name="frame-bg-remover",
+        description="去背景",
+        api=HttpBackend(type="http", endpoint_path="/api/remove-bg"),
         params=[],
         output=SkillOutput(type="text", display_as="feishu_text"),
         system_prompt_core="test",
@@ -224,12 +235,10 @@ async def test_complete_background_job_records_delayed_reply_failure(monkeypatch
 
     active_job = _active_job("running")
     store = _FakeStore(_session(active_job))
-    send_execute_result = AsyncMock(return_value=False)
-    reply_text = AsyncMock(return_value=True)
+    reply_text = AsyncMock(return_value=False)
     record_metric = Mock()
 
     monkeypatch.setattr(main_mod, "_store", store)
-    monkeypatch.setattr(main_mod, "_send_execute_result", send_execute_result)
     monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
     monkeypatch.setattr(main_mod, "reply_text", reply_text)
     monkeypatch.setattr(main_mod, "record_metric", record_metric)
@@ -242,6 +251,7 @@ async def test_complete_background_job_records_delayed_reply_failure(monkeypatch
         ExecuteResult(kind="text", text="done"),
     )
 
+    assert reply_text.await_count == 2
     record_metric.assert_any_call(
         "delayed_reply_failure",
         stage="send_result",
@@ -280,6 +290,159 @@ async def test_complete_background_job_records_text_reply_failure_without_stubbi
         job_status="running",
         result_kind="text",
     )
+
+
+@pytest.mark.asyncio
+async def test_complete_background_job_retries_result_reply_before_completion(monkeypatch):
+    from src import main as main_mod
+
+    active_job = _active_job("running")
+    store = _FakeStore(_session(active_job))
+    reply_text = AsyncMock(side_effect=[False, True, True])
+    record_metric = Mock()
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
+
+    await main_mod._complete_background_job(
+        "user-1",
+        active_job,
+        "msg-source",
+        _skill(),
+        ExecuteResult(kind="text", text="done"),
+    )
+
+    assert reply_text.await_count == 3
+    assert store.session.phase == ConversationPhase.completed
+    assert store.session.completed is True
+    assert store.session.active_job.status == "completed"
+    delayed_failures = [
+        call for call in record_metric.call_args_list
+        if call.args and call.args[0] == "delayed_reply_failure"
+    ]
+    assert delayed_failures == []
+
+
+@pytest.mark.asyncio
+async def test_complete_background_job_keeps_running_when_result_reply_fails_after_retry(monkeypatch):
+    from src import main as main_mod
+
+    active_job = _active_job("running")
+    store = _FakeStore(_session(active_job))
+    reply_text = AsyncMock(return_value=False)
+    record_metric = Mock()
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
+
+    await main_mod._complete_background_job(
+        "user-1",
+        active_job,
+        "msg-source",
+        _skill(),
+        ExecuteResult(kind="text", text="done"),
+    )
+
+    assert reply_text.await_count == 2
+    assert store.session.phase == ConversationPhase.running_job
+    assert store.session.completed is False
+    assert store.session.completed_result is None
+    assert store.session.active_job.status == "running"
+    assert store.session.active_job.job_id == "backend-job"
+    assert store.session.active_job.last_observation == {
+        "reply_failed": True,
+        "result_kind": "text",
+    }
+    record_metric.assert_any_call(
+        "delayed_reply_failure",
+        stage="send_result",
+        skill_name="xd-poster-gen",
+        job_status="running",
+        result_kind="text",
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_background_job_marks_http_skill_failed_when_result_reply_fails(monkeypatch):
+    from src import main as main_mod
+
+    active_job = _active_job("running").model_copy(update={"skill_name": "frame-bg-remover"})
+    store = _FakeStore(_session(active_job))
+    reply_text = AsyncMock(return_value=False)
+    record_metric = Mock()
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "_maybe_save_cached_step1", AsyncMock())
+    monkeypatch.setattr(main_mod, "record_metric", record_metric)
+
+    await main_mod._complete_background_job(
+        "user-1",
+        active_job,
+        "msg-source",
+        _http_skill(),
+        ExecuteResult(kind="text", text="done"),
+    )
+
+    assert reply_text.await_count == 2
+    assert store.session.phase == ConversationPhase.failed
+    assert store.session.completed is False
+    assert store.session.completed_result is None
+    assert store.session.active_job.status == "failed"
+    assert store.session.active_job.last_observation == {
+        "reply_failed": True,
+        "result_kind": "text",
+    }
+
+
+@pytest.mark.asyncio
+async def test_send_execute_result_retry_does_not_upload_binary_twice(monkeypatch):
+    from src import main as main_mod
+
+    upload_image = AsyncMock(return_value="img-key")
+    reply_image = AsyncMock(side_effect=[False, True])
+
+    monkeypatch.setattr(main_mod, "upload_image", upload_image)
+    monkeypatch.setattr(main_mod, "reply_image", reply_image)
+
+    sent = await main_mod._send_execute_result_with_retry(
+        "msg-source",
+        ExecuteResult(kind="binary", content_bytes=b"png"),
+        _skill(),
+    )
+
+    assert sent is True
+    upload_image.assert_awaited_once()
+    assert reply_image.await_count == 2
+    assert [call.args[2] for call in reply_image.await_args_list] == ["img-key", "img-key"]
+
+
+@pytest.mark.asyncio
+async def test_send_execute_result_retry_does_not_download_url_twice(monkeypatch):
+    from src import main as main_mod
+
+    download_url = AsyncMock(return_value=b"png")
+    upload_image = AsyncMock(return_value="img-key")
+    reply_image = AsyncMock(side_effect=[False, True])
+
+    monkeypatch.setattr(main_mod, "download_url", download_url)
+    monkeypatch.setattr(main_mod, "upload_image", upload_image)
+    monkeypatch.setattr(main_mod, "reply_image", reply_image)
+
+    sent = await main_mod._send_execute_result_with_retry(
+        "msg-source",
+        ExecuteResult(kind="url", result_url="https://example.test/result.png"),
+        _skill(),
+    )
+
+    assert sent is True
+    download_url.assert_awaited_once_with("https://example.test/result.png")
+    upload_image.assert_awaited_once()
+    assert reply_image.await_count == 2
 
 
 @pytest.mark.asyncio
