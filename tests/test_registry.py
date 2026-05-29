@@ -226,7 +226,7 @@ def test_load_rich_poster_manifest_normalizes_to_poll_backend(tmp_path, monkeypa
     assert resource.url == "http://poster.local:8090/api/characters"
 
 
-def test_load_rich_town_manifest_uses_fusion_backend_and_discovery(tmp_path, monkeypatch):
+def test_load_rich_town_manifest_prefers_single_backend_and_discovery(tmp_path, monkeypatch):
     import src.skill.registry as reg
 
     _make_skill_dir(
@@ -242,7 +242,7 @@ def test_load_rich_town_manifest_uses_fusion_backend_and_discovery(tmp_path, mon
 
     assert isinstance(skill.api, PollBackend)
     assert skill.api.base_url == "http://localhost:8085"
-    assert skill.api.submit_path == "/api/generate-fusion"
+    assert skill.api.submit_path == "/api/generate"
     assert skill.api.job_id_field == "jobId"
     assert skill.api.poll_path_template == "/api/poll/{job_id}"
     assert skill.api.poll_interval_sec == 5
