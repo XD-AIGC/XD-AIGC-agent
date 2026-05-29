@@ -7,6 +7,7 @@ the current skill document or manifest already exposes.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -23,6 +24,7 @@ from src.skill.schema import HttpBackend, HttpResource, PollBackend, Skill
 _HTTP_LINE_RE = re.compile(r"^\s*(GET|POST)\s+(\S+)", re.IGNORECASE | re.MULTILINE)
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 _MAX_TEXT_CHARS = 6000
+log = logging.getLogger(__name__)
 
 
 class SkillHttpAction(BaseModel):
@@ -206,6 +208,11 @@ def _apply_action_metadata(actions: dict[str, SkillHttpAction], skill: Skill) ->
     for metadata in skill.actions:
         action = actions.get(metadata.name)
         if action is None:
+            log.warning(
+                "[SKILL] manifest action %r not in SKILL.md HTTP blocks for skill=%s",
+                metadata.name,
+                skill.name,
+            )
             continue
         actions[metadata.name] = action.model_copy(update={"data_schema_id": metadata.data_schema_id})
 

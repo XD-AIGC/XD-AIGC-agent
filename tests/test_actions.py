@@ -79,6 +79,21 @@ def test_build_action_catalog_applies_manifest_data_schema_id():
     assert catalog["get_styles"].data_schema_id == "poster.styles"
 
 
+def test_build_action_catalog_warns_for_unknown_manifest_action(caplog):
+    skill = _skill_with_action_schema().model_copy(
+        update={"actions": [SkillActionMetadata(name="get_style", data_schema_id="poster.styles")]}
+    )
+    caplog.set_level("WARNING", logger="src.skill.actions")
+
+    catalog = build_action_catalog(skill)
+
+    assert catalog["get_styles"].data_schema_id is None
+    assert (
+        "[SKILL] manifest action 'get_style' not in SKILL.md HTTP blocks for skill=poster"
+        in caplog.text
+    )
+
+
 @pytest.mark.asyncio
 async def test_execute_skill_action_posts_json_to_allowed_action():
     mock_resp = _resp(200, json_data={"status": "completed", "fileId": "6a"})
