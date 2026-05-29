@@ -11,6 +11,14 @@ def test_completed_capability_stays_completed_and_replies():
     assert not transition.allow_skill_runtime
 
 
+def test_completed_runtime_question_stays_completed_and_replies_runtime_context():
+    transition = StateMachine().transition(ConversationPhase.completed, TurnIntent.ask_runtime)
+
+    assert transition.next_phase == ConversationPhase.completed
+    assert transition.side_effects == [SideEffect.reply_runtime]
+    assert not transition.allow_skill_runtime
+
+
 def test_completed_modify_returns_to_collecting_and_allows_runtime():
     transition = StateMachine().transition(ConversationPhase.completed, TurnIntent.modify_param)
 

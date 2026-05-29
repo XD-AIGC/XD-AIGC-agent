@@ -18,6 +18,7 @@ class SideEffect(str, Enum):
     reply_cancelled = "reply_cancelled"
     reply_capability = "reply_capability"
     reply_chitchat = "reply_chitchat"
+    reply_runtime = "reply_runtime"
     reply_running_job = "reply_running_job"
     submit_job = "submit_job"
 
@@ -96,6 +97,8 @@ class StateMachine:
             return Transition(ConversationPhase.collecting, [SideEffect.invoke_skill_runtime], True)
         if intent == TurnIntent.ask_capability:
             return Transition(ConversationPhase.completed, [SideEffect.reply_capability])
+        if intent == TurnIntent.ask_runtime:
+            return Transition(ConversationPhase.completed, [SideEffect.reply_runtime])
         if intent == TurnIntent.chitchat:
             return Transition(ConversationPhase.completed, [SideEffect.reply_chitchat])
         return Transition(ConversationPhase.completed, [SideEffect.reply_boundary])

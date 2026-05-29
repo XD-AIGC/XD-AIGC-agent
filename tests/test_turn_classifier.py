@@ -1,3 +1,5 @@
+import pytest
+
 from src.conversation.classifier import TurnClassifier, TurnIntent
 from src.conversation.session import ConversationPhase
 
@@ -18,6 +20,19 @@ def test_classifier_keeps_awaiting_confirmation_edits_in_skill_runtime_path():
     result = TurnClassifier().classify("换成横版", phase=ConversationPhase.awaiting_confirmation)
 
     assert result.intent == TurnIntent.modify_param
+
+
+@pytest.mark.parametrize("text", ["yes", "ok", "好的"])
+def test_classifier_accepts_common_confirmation_phrases_when_awaiting_confirmation(text):
+    result = TurnClassifier().classify(text, phase=ConversationPhase.awaiting_confirmation)
+
+    assert result.intent == TurnIntent.confirm
+
+
+def test_classifier_detects_completed_runtime_question():
+    result = TurnClassifier().classify("刚刚生图，你没有调用 SKILL_TOKEN??", phase=ConversationPhase.completed)
+
+    assert result.intent == TurnIntent.ask_runtime
 
 
 def test_classifier_treats_completed_date_question_as_unrelated():
