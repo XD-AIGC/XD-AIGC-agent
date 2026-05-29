@@ -9,6 +9,15 @@ from typing import Any
 from src.conversation.options import OptionSet
 from src.skill.schema import Skill, SkillParam
 
+_ARTIFACT_PARAM_NAMES = {
+    "fileId",
+    "file_id",
+    "jobId",
+    "job_id",
+    "v2JobId",
+    "cachedStep1FileId",
+}
+
 
 def filter_updated_params(
     updated_params: dict[str, Any],
@@ -16,6 +25,7 @@ def filter_updated_params(
     session: Any,
     skill: Skill | None,
     user_text: str,
+    trusted_text: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Return accepted LLM updates plus rejected keys with machine-readable reasons."""
     accepted: dict[str, Any] = {}
@@ -30,6 +40,12 @@ def filter_updated_params(
         old_value = current.get(key)
         param = params.get(key)
 
+        if param is None:
+            if _is_valid_artifact_update(key, new_value, trusted_text):
+                accepted[key] = new_value
+                continue
+            rejected[key] = "unknown_param"
+            continue
         if old_exists and _same_value(old_value, new_value):
             accepted[key] = new_value
             continue
@@ -46,8 +62,12 @@ def filter_updated_params(
             rejected[key] = "existing_structured_value_changed_without_provenance"
             continue
 
-        accepted[key] = new_value
+        rejected[key] = "value_without_provenance"
     return accepted, rejected
+
+
+def _is_valid_artifact_update(key: str, value: Any, trusted_text: str) -> bool:
+    return key in _ARTIFACT_PARAM_NAMES and _value_appears_in_text(value, trusted_text)
 
 
 def _is_valid_option_or_enum_value(key: str, value: Any, param: SkillParam | None, session: Any) -> bool:

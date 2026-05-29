@@ -1130,6 +1130,7 @@ async def _process_locked(message_id: str, msg_type: str, content: dict, user_id
 
 async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> None:
     """主决策循环：根据 mode 调 router/skill，自动 handle lookup，遇到终态退出。"""
+    user_provenance_text = text
     turn = _classify_turn(text, session)
     phase = _phase_for_session(session)
     transition = _state_machine.transition(phase, turn.intent)
@@ -1206,6 +1207,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             return
         text = resolved_text
 
+    if text != user_provenance_text:
+        user_provenance_text = f"{user_provenance_text}\n{text}"
+
     lookup_count = 0
     skill_action_count = 0
     current_text = text
@@ -1253,7 +1257,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 action.updated_params,
                 session=session,
                 skill=skill,
-                user_text=current_text,
+                user_text=user_provenance_text,
+                trusted_text=current_text,
             )
             if rejected_updates:
                 log.warning("[PROVENANCE] rejected updated_params=%s", rejected_updates)

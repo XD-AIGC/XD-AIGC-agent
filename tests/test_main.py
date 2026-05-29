@@ -737,7 +737,7 @@ async def test_ask_param_with_updated_value_continues_without_reasking(monkeypat
     from src import main as main_mod
     from src.orchestrator.schema import UserSession
     from src.orchestrator.schema import BotAction
-    from src.skill.schema import Skill, HttpBackend, SkillOutput
+    from src.skill.schema import Skill, HttpBackend, SkillOutput, SkillParam
 
     class FakeStore:
         def __init__(self):
@@ -756,7 +756,7 @@ async def test_ask_param_with_updated_value_continues_without_reasking(monkeypat
         name="xd-poster-gen",
         description="生成海报",
         api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
-        params=[],
+        params=[SkillParam(name="ratio", type="enum", values=["2:3", "3:2"], prompt_to_user="比例")],
         output=SkillOutput(type="text", display_as="feishu_text"),
         system_prompt_core="test",
     )
@@ -774,6 +774,57 @@ async def test_ask_param_with_updated_value_continues_without_reasking(monkeypat
     assert reply_text.call_args[0][2] == "继续下一步"
     assert session.collected_params["ratio"] == "3:2"
     assert session.pending_param is None
+
+
+@pytest.mark.asyncio
+async def test_select_skill_first_turn_uses_original_user_text_for_provenance(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import UserSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.schema import Skill, HttpBackend, SkillOutput, SkillParam
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = []
+
+        async def save(self, user_id, session):
+            self.saved.append((user_id, session.model_copy(deep=True)))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    router_decide = AsyncMock(return_value=BotAction(action="select_skill", skill_name="xd-poster-gen"))
+    skill_decide = AsyncMock(side_effect=[
+        BotAction(
+            action="ask_param",
+            param_name="actionDesc",
+            message="请确认动作",
+            updated_params={"actionDesc": "赛季更新"},
+        ),
+        BotAction(action="reply", message="继续下一步"),
+    ])
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[SkillParam(name="actionDesc", type="text", prompt_to_user="动作")],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "router_decide", router_decide)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    session = UserSession(mode="router")
+
+    await main_mod._agentic_loop("做一个赛季更新海报", session, "user-1", "msg-1")
+
+    assert router_decide.await_count == 1
+    assert skill_decide.await_count == 2
+    reply_text.assert_called_once()
+    assert reply_text.call_args[0][2] == "继续下一步"
+    assert session.collected_params["actionDesc"] == "赛季更新"
 
 
 @pytest.mark.asyncio

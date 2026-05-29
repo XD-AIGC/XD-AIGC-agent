@@ -19,7 +19,7 @@ from src.conversation.session import load_session
 from src.orchestrator.schema import BotAction, UserSession
 from src.skill.actions import SkillActionObservation
 from src.skill.executor import ExecuteResult
-from src.skill.schema import PollBackend, Skill, SkillOutput
+from src.skill.schema import PollBackend, Skill, SkillOutput, SkillParam
 
 
 _RAW_ID_RE = re.compile(r"\b(?:ou|om|oc)_[A-Za-z0-9_]+\b|\bfile_[A-Za-z0-9_]+\b")
@@ -198,7 +198,16 @@ def _fake_registry(skill_name: str) -> dict[str, Skill]:
             submit_path="/api/generate-v2",
             poll_path_template="/api/poll-v2/{job_id}",
         ),
-        params=[],
+        params=[
+            SkillParam(name="characters", type="json", prompt_to_user="角色"),
+            SkillParam(name="actionDesc", type="text", prompt_to_user="动作"),
+            SkillParam(
+                name="ratio",
+                type="enum",
+                values=["2:3", "9:16", "1:1", "3:2", "16:9"],
+                prompt_to_user="比例",
+            ),
+        ],
         output=SkillOutput(type="image_url", display_as="feishu_image"),
         system_prompt_core="test skill core",
     )
