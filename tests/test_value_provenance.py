@@ -1,3 +1,5 @@
+import json
+
 from src.orchestrator.schema import BotAction, UserSession
 from src.skill.schema import HttpBackend, Skill, SkillOutput, SkillParam
 
@@ -104,6 +106,48 @@ def test_provenance_allows_action_artifact_id_from_trusted_text():
     )
 
     assert accepted == {"fileId": "6a"}
+    assert rejected == {}
+
+
+def test_provenance_allows_json_character_key_from_trusted_text():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(mode="skill", skill_name="xd-town-studio")
+    skill = _skill([SkillParam(name="characters", type="json", prompt_to_user="角色")])
+
+    accepted, rejected = filter_updated_params(
+        {"characters": ["artdam_0528_2156"]},
+        session=session,
+        skill=skill,
+        user_text="4，港口，一起野餐，默认",
+        trusted_text='{"characters":[{"key":"artdam_0528_2156","name":"金砂流影·先知"}]}',
+    )
+
+    assert accepted == {"characters": ["artdam_0528_2156"]}
+    assert rejected == {}
+
+
+def test_provenance_allows_json_character_object_from_trusted_text():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(mode="skill", skill_name="xd-town-studio")
+    skill = _skill([SkillParam(name="characters", type="json", prompt_to_user="角色")])
+    character = {
+        "key": "artdam_0528_2156",
+        "name": "金砂流影·先知",
+        "refImage": "artdam://asset/2156?public_id=a_Vf52f1KbMFuE&resize=4k",
+        "fusionDesc": "0528 套装角色「金砂流影·先知」",
+    }
+
+    accepted, rejected = filter_updated_params(
+        {"characters": [character]},
+        session=session,
+        skill=skill,
+        user_text="4，港口，一起野餐，默认",
+        trusted_text=json.dumps({"characters": [character]}, ensure_ascii=False),
+    )
+
+    assert accepted == {"characters": [character]}
     assert rejected == {}
 
 
