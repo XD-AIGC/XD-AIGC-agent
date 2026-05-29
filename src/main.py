@@ -625,6 +625,52 @@ def _duplicate_submit_message(active_job) -> str:
     return "这条请求已经提交过，我不会重复生成。"
 
 
+def _duplicate_active_job_for_message(session, message_id: str) -> ActiveJob | None:
+    processed = getattr(session, "last_processed_message_ids", None) or []
+    active_job = getattr(session, "active_job", None)
+    if message_id not in processed or active_job is None:
+        return None
+    if getattr(active_job, "source_message_id", None) != message_id:
+        return None
+    if getattr(session, "skill_name", None) and active_job.skill_name != session.skill_name:
+        return None
+    return active_job
+
+
+def _sync_duplicate_active_job_phase(session, active_job: ActiveJob) -> None:
+    if not isinstance(session, ConversationSession):
+        return
+    status_phase = {
+        "submitted": ConversationPhase.running_job,
+        "running": ConversationPhase.running_job,
+        "timeout": ConversationPhase.running_job,
+        "completed": ConversationPhase.completed,
+        "failed": ConversationPhase.failed,
+        "cancelled": ConversationPhase.cancelled,
+    }
+    session.phase = status_phase.get(active_job.status, session.phase)
+    sync_legacy_fields(session)
+
+
+async def _handle_duplicate_message_redelivery(session, user_id: str, message_id: str) -> bool:
+    active_job = _duplicate_active_job_for_message(session, message_id)
+    if active_job is None:
+        return False
+    _sync_duplicate_active_job_phase(session, active_job)
+    record_metric(
+        "duplicate_submit",
+        skill_name=active_job.skill_name,
+        action_name=active_job.action_name,
+        job_status=active_job.status,
+        user_key=metric_user_key(user_id),
+    )
+    msg = _duplicate_submit_message(active_job)
+    await reply_text(_client, message_id, msg)
+    _append_history(session, "assistant", msg)
+    await _store.save(user_id, session)
+    return True
+
+
 async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill, payload: dict, action_name: str):
     try:
         submission = await _job_controller.begin_submit(
@@ -757,6 +803,17 @@ def _retry_payload(session) -> dict:
     if isinstance(submitted_payload, dict) and submitted_payload:
         return dict(submitted_payload)
     return dict(getattr(session, "collected_params", {}) or {})
+
+
+def _move_session_to_skill_runtime_phase(session, transition) -> None:
+    if not isinstance(session, ConversationSession) or not transition.allow_skill_runtime:
+        return
+    if session.phase == transition.next_phase:
+        return
+    session.phase = transition.next_phase
+    if transition.next_phase in {ConversationPhase.collecting, ConversationPhase.awaiting_confirmation}:
+        session.active_job = None
+    sync_legacy_fields(session)
 
 
 def _mark_skill_complete(session, message_id: str) -> None:
@@ -1269,6 +1326,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         if await _handle_running_job_turn(session, user_id, message_id, text, turn.intent):
             return
 
+    if await _handle_duplicate_message_redelivery(session, user_id, message_id):
+        return
+
     # Retry 快路径：session 已完成 + 用户说「再来一张」类短语 → 不进 LLM，直接重 submit
     if (
         session.completed
@@ -1313,6 +1373,8 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         await reply_text(_client, message_id, msg)
         await _store.save(user_id, session)
         return
+
+    _move_session_to_skill_runtime_phase(session, transition)
 
     # Skill mode 下的问候/含糊短句不要交给 Skill LLM，避免误判为继续 submit。
     if (

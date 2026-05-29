@@ -1,0 +1,75 @@
+{
+  "id": "option_set_expired_v1",
+  "description": "OptionSet 过期后，编号 2 不能继续静默复用旧菜单，应清空 last_options 并要求重新确认。",
+  "initial_session": {
+    "schema_version": 2,
+    "phase": "collecting",
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "pending_param": "ratio",
+    "completed": false,
+    "last_options": {
+      "id": "ratio-old",
+      "param_name": "ratio",
+      "source": "enum",
+      "scope": "skill_param",
+      "items": [
+        {
+          "index": 1,
+          "label": "2:3 竖版海报",
+          "value": "2:3",
+          "param_name": "ratio",
+          "aliases": ["竖版"]
+        },
+        {
+          "index": 2,
+          "label": "3:2 横版",
+          "value": "3:2",
+          "param_name": "ratio",
+          "aliases": ["横版"]
+        }
+      ],
+      "page": 1,
+      "page_size": 8,
+      "allow_multi": false,
+      "skill_version": "v1",
+      "created_at": 1.0,
+      "ttl_sec": 1
+    }
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "2",
+      "skill_actions": [
+        {
+          "action": "ask_param",
+          "param_name": "ratio",
+          "message": "菜单可能已更新，请重新选择海报比例。"
+        }
+      ],
+      "expect": {
+        "reply_text_contains": ["菜单可能已更新", "2:3", "3:2"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 1,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": false,
+          "collected_params": {}
+        },
+        "v2_optional": {
+          "phase": "collecting",
+          "last_options_present": false
+        }
+      }
+    }
+  ]
+}

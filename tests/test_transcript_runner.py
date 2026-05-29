@@ -32,10 +32,16 @@ def _fixture_params():
 def test_transcript_fixtures_are_present_and_redacted():
     assert {f.id for f in FIXTURES} >= {
         "billbill_provenance_xfail",
+        "character_alias_choice_v1",
         "completed_capability_question_v1",
         "completed_date_question_v1",
+        "completed_modify_landscape_v1",
+        "completed_retry_v1",
+        "completed_thanks_v1",
         "confirmation_submit_v1",
+        "duplicate_submit_v1",
         "numbered_character_choice_v1",
+        "option_set_expired_v1",
         "ratio_choice_v1",
         "restart_recovery_v1",
         "running_cancel_local_v1",
@@ -46,7 +52,7 @@ def test_transcript_fixtures_are_present_and_redacted():
         "timeout_modify_v1",
         "timeout_retry_v1",
     }
-    assert len(FIXTURES) >= 14
+    assert len(FIXTURES) >= 20
     for fixture in FIXTURES:
         assert_fixture_is_redacted(fixture)
 

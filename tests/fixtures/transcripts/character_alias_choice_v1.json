@@ -1,0 +1,75 @@
+{
+  "id": "character_alias_choice_v1",
+  "description": "用户回复角色 key/alias bill，应确定性解析为角色值 bill，不交给 LLM 自由扩写成 billbill。",
+  "initial_session": {
+    "schema_version": 2,
+    "phase": "collecting",
+    "mode": "skill",
+    "skill_name": "xd-poster-gen",
+    "pending_param": "characters",
+    "last_options": {
+      "id": "characters-page-1",
+      "param_name": "characters",
+      "source": "resource",
+      "scope": "skill_param",
+      "items": [
+        {
+          "index": 1,
+          "label": "安妮 (annie)",
+          "value": ["annie"],
+          "param_name": "characters",
+          "aliases": ["annie"]
+        },
+        {
+          "index": 2,
+          "label": "比尔 (bill)",
+          "value": ["bill"],
+          "param_name": "characters",
+          "aliases": ["bill", "比尔"]
+        }
+      ],
+      "page": 1,
+      "page_size": 8,
+      "allow_multi": false,
+      "skill_version": "v1",
+      "created_at": 1779940000.0,
+      "ttl_sec": 999999999
+    }
+  },
+  "turns": [
+    {
+      "message_id": "<MSG_1>",
+      "text": "bill",
+      "skill_actions": [
+        {
+          "action": "ask_param",
+          "param_name": "actionDesc",
+          "message": "请描述角色动作"
+        }
+      ],
+      "expect": {
+        "reply_text_contains": ["请描述角色动作"],
+        "trace": {
+          "router_llm_calls": 0,
+          "skill_llm_calls": 1,
+          "skill_action_calls": 0,
+          "submit_job_calls": 0,
+          "execute_calls": 0,
+          "reply_text_calls": 1,
+          "reply_image_calls": 0
+        },
+        "session": {
+          "mode": "skill",
+          "skill_name": "xd-poster-gen",
+          "completed": false,
+          "collected_params": {
+            "characters": ["bill"]
+          }
+        },
+        "v2_optional": {
+          "last_options_present": false
+        }
+      }
+    }
+  ]
+}
