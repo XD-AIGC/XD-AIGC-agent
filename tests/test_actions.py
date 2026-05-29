@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import httpx
 from unittest.mock import AsyncMock, patch
@@ -69,7 +71,7 @@ async def test_execute_skill_action_posts_json_to_allowed_action():
 
     assert obs.status == "success"
     assert obs.data == {"status": "completed", "fileId": "6a"}
-    assert obs.data_schema_id == "image.fileId"
+    assert json.loads(obs.for_prompt())["data"]["schema_id"] == "image.fileId"
     async_cli.request.assert_awaited_once()
     args, kwargs = async_cli.request.await_args
     assert args[:2] == ("POST", "http://localhost:8090/api/generate-step1-only")

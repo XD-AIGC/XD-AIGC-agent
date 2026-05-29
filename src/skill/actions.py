@@ -40,6 +40,7 @@ class SkillActionObservation:
     summary: str
     data: Any = None
     data_schema_id: str | None = None
+    source_name: str | None = None
     artifact: dict[str, Any] = field(default_factory=dict)
     next_actions: list[str] = field(default_factory=list)
     stop_condition: str | None = None
@@ -52,6 +53,7 @@ class SkillActionObservation:
             data=_truncate_data(self.data),
             artifacts=self.artifact,
             data_schema_id=self.data_schema_id,
+            source_name=self.source_name,
             next_actions=self.next_actions,
             stop_condition=self.stop_condition,
         )
@@ -157,7 +159,7 @@ async def execute_skill_action(
         status="success",
         summary=f"{action.name} 调用成功",
         data=data,
-        data_schema_id=_infer_action_schema_id(action.name, data),
+        source_name=action.name,
     )
 
 
@@ -265,23 +267,3 @@ def _truncate_data(data: Any) -> Any:
         return data
     return text[:_MAX_TEXT_CHARS] + "...[truncated]"
 
-
-def _infer_action_schema_id(action_name: str, data: Any) -> str | None:
-    if isinstance(data, dict):
-        if _dict_str(data, "fileId", "file_id"):
-            return "image.fileId"
-        if _dict_str(data, "job_id", "jobId", "v2JobId"):
-            return "job.polling"
-        if _dict_str(data, "url", "result_url"):
-            return "image.url"
-    if "characters" in action_name:
-        return "lookup.characters"
-    return None
-
-
-def _dict_str(data: dict[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = data.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None

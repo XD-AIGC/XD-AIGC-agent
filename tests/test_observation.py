@@ -89,6 +89,22 @@ def test_generic_list_payload_does_not_default_to_characters():
     }
 
 
+def test_character_list_requires_character_source_context():
+    payload = _prompt_payload(
+        SkillActionObservation(
+            status="success",
+            summary="characters loaded",
+            data=[{"key": "annie", "name": "安妮"}],
+            source_name="lookup_characters",
+        )
+    )
+
+    assert payload["data"] == {
+        "schema_id": "lookup.characters",
+        "payload": {"items": [{"key": "annie", "name": "安妮"}]},
+    }
+
+
 def test_scalar_string_payload_uses_text_plain_schema():
     payload = _prompt_payload(
         SkillActionObservation(
