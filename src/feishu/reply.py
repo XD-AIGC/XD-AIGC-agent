@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 _MAX_TEXT_LEN = 3000
 
 
-async def reply_text(client: lark.Client, message_id: str, text: str) -> None:
+async def reply_text(client: lark.Client, message_id: str, text: str) -> bool:
     if len(text) > _MAX_TEXT_LEN:
         log.warning(f"reply text 过长 ({len(text)} 字符)，截断到 {_MAX_TEXT_LEN}")
         text = text[:_MAX_TEXT_LEN] + "\n...(过长已截断)"
@@ -24,9 +24,11 @@ async def reply_text(client: lark.Client, message_id: str, text: str) -> None:
     resp = await client.im.v1.message.areply(req)
     if not resp.success():
         log.error(f"reply_text failed: code={resp.code} msg={resp.msg} text_len={len(text)} text_preview={text[:200]!r}")
+        return False
+    return True
 
 
-async def reply_image(client: lark.Client, message_id: str, image_key: str) -> None:
+async def reply_image(client: lark.Client, message_id: str, image_key: str) -> bool:
     body = ReplyMessageRequestBody.builder() \
         .msg_type("image") \
         .content(json.dumps({"image_key": image_key})) \
@@ -35,4 +37,8 @@ async def reply_image(client: lark.Client, message_id: str, image_key: str) -> N
         .message_id(message_id) \
         .request_body(body) \
         .build()
-    await client.im.v1.message.areply(req)
+    resp = await client.im.v1.message.areply(req)
+    if not resp.success():
+        log.error(f"reply_image failed: code={resp.code} msg={resp.msg} image_key={image_key[:80]!r}")
+        return False
+    return True

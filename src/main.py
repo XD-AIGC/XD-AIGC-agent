@@ -43,6 +43,7 @@ from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
 from src.config import AGENT_RUNTIME_DRY_RUN, FEISHU_APP_ID, FEISHU_APP_SECRET
+from src.monitoring import record_metric
 from src.runtime_dry_run import choose_runtime_label
 import time
 
@@ -360,25 +361,26 @@ def _enum_options_block(skill: Skill | None, param_name: str | None) -> str:
     return "\n".join(lines)
 
 
-async def _reply_with_result(message_id: str, result) -> None:
+async def _reply_with_result(message_id: str, result) -> bool:
     """统一处理 ExecuteResult 三种返回：binary 直接上传；url 下载再上传；text 文字回复。"""
     if result.kind == "binary":
         uploaded_key = await upload_image(_client, result.content_bytes)
-        await reply_image(_client, message_id, uploaded_key)
+        return bool(await reply_image(_client, message_id, uploaded_key))
     elif result.kind == "url":
         img_bytes = await download_url(result.result_url)
         uploaded_key = await upload_image(_client, img_bytes)
-        await reply_image(_client, message_id, uploaded_key)
-    else:
-        await reply_text(_client, message_id, result.text or "完成")
+        return bool(await reply_image(_client, message_id, uploaded_key))
+    return bool(await reply_text(_client, message_id, result.text or "完成"))
 
 
-async def _send_skill_action_artifact(message_id: str, obs: SkillActionObservation) -> None:
+async def _send_skill_action_artifact(message_id: str, obs: SkillActionObservation) -> bool:
     """If a skill action returned image bytes, send them immediately as an artifact."""
     if obs.content_bytes is None:
-        return
-    await _reply_with_result(message_id, ExecuteResult(kind="binary", content_bytes=obs.content_bytes))
-    obs.artifact["sent_to_user"] = True
+        return False
+    sent = await _reply_with_result(message_id, ExecuteResult(kind="binary", content_bytes=obs.content_bytes))
+    if sent:
+        obs.artifact["sent_to_user"] = True
+    return sent
 
 
 def _extract_image_file_id(data) -> str | None:
@@ -436,8 +438,7 @@ async def _send_execute_result(message_id: str, result: ExecuteResult, skill: Sk
             obs = await execute_skill_action(skill, "get_image", {"path_params": {"fileId": file_id}})
             await _send_skill_action_artifact(message_id, obs)
             return bool(obs.artifact.get("sent_to_user"))
-    await _reply_with_result(message_id, result)
-    return True
+    return await _reply_with_result(message_id, result)
 
 
 async def _maybe_poll_skill_job(skill: Skill, message_id: str, obs: SkillActionObservation) -> bool:
@@ -562,10 +563,11 @@ def _completed_boundary_msg() -> str:
     return _response_composer().completed_boundary()
 
 
-async def _reply_completion_followup(message_id: str, session) -> None:
+async def _reply_completion_followup(message_id: str, session) -> bool:
     msg = _completion_followup_msg()
-    await reply_text(_client, message_id, msg)
+    sent = bool(await reply_text(_client, message_id, msg))
     _append_history(session, "assistant", msg)
+    return sent
 
 
 def _job_payload_error_message(exc: InvalidJobPayloadError) -> str:
@@ -610,6 +612,12 @@ async def _begin_submit_job(session, user_id: str, message_id: str, skill: Skill
         await _store.save(user_id, session)
         return None
     if submission.duplicate:
+        record_metric(
+            "duplicate_submit",
+            skill_name=skill.name,
+            action_name=submission.active_job.action_name,
+            job_status=submission.active_job.status,
+        )
         msg = _duplicate_submit_message(submission.active_job)
         await reply_text(_client, message_id, msg)
         _append_history(session, "assistant", msg)
@@ -655,6 +663,16 @@ def _active_job_matches(current: ActiveJob | None, expected: ActiveJob) -> bool:
         current.skill_name == expected.skill_name
         and current.source_message_id == expected.source_message_id
         and not current.cancelled_locally
+    )
+
+
+def _record_running_job_anomaly(stage: str, expected_job: ActiveJob, reason: str) -> None:
+    record_metric(
+        "running_job_anomaly",
+        stage=stage,
+        reason=reason,
+        skill_name=expected_job.skill_name,
+        job_status=expected_job.status,
     )
 
 
@@ -808,6 +826,7 @@ async def _persist_background_running_job(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), expected_job):
+            _record_running_job_anomaly("persist_running", expected_job, "active_job_mismatch")
             return False
         session.active_job = running_job
         session.phase = ConversationPhase.running_job
@@ -825,8 +844,17 @@ async def _complete_background_job(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
+            _record_running_job_anomaly("complete", current_job, "active_job_mismatch")
             return
-        await _send_execute_result(message_id, result, skill)
+        sent_result = await _send_execute_result(message_id, result, skill)
+        if not sent_result:
+            record_metric(
+                "delayed_reply_failure",
+                stage="send_result",
+                skill_name=current_job.skill_name,
+                job_status=current_job.status,
+                result_kind=result.kind,
+            )
         await _maybe_save_cached_step1(current_job.payload, result, user_id)
         session.pending_param = None
         session.loaded_resources = {}
@@ -840,7 +868,15 @@ async def _complete_background_job(
             source_message_id=current_job.source_message_id,
         )
         _job_controller.mark_completed(session, current_job, observation={"kind": result.kind})
-        await _reply_completion_followup(message_id, session)
+        sent_followup = await _reply_completion_followup(message_id, session)
+        if not sent_followup:
+            record_metric(
+                "delayed_reply_failure",
+                stage="completion_followup",
+                skill_name=current_job.skill_name,
+                job_status=current_job.status,
+                result_kind=result.kind,
+            )
         await _save_conversation_session(user_id, session)
 
 
@@ -853,6 +889,7 @@ async def _handle_background_skill_error(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
+            _record_running_job_anomaly("skill_error", current_job, "active_job_mismatch")
             return
         if _is_timeout_error(exc):
             session.active_job = current_job.model_copy(
@@ -881,6 +918,7 @@ async def _handle_background_unexpected_error(
     async with _get_user_lock(user_id):
         session = await _load_conversation_session(user_id)
         if not _active_job_matches(getattr(session, "active_job", None), current_job):
+            _record_running_job_anomaly("unexpected_error", current_job, "active_job_mismatch")
             return
         _job_controller.mark_failed(session, current_job, observation={"error": str(exc)})
         session.completed = False
@@ -993,6 +1031,14 @@ async def _handle_timeout_job_turn(
 async def _handle_running_job_turn(session, user_id: str, message_id: str, text: str, intent: TurnIntent) -> bool:
     active_job = _job_controller.recovery_candidate(session) if isinstance(session, ConversationSession) else None
     if active_job is None:
+        if isinstance(session, ConversationSession):
+            record_metric(
+                "running_job_anomaly",
+                stage="handle_turn",
+                reason="missing_active_job",
+                skill_name=session.skill_name,
+                job_status="missing",
+            )
         return False
     if active_job.status == "timeout":
         return await _handle_timeout_job_turn(session, user_id, message_id, text, intent, active_job)
