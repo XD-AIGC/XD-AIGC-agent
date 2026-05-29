@@ -5,7 +5,7 @@
 from pathlib import Path
 
 from src.skill.registry import load_skills, reload_registry, reset_registry
-from src.skill.schema import Skill
+from src.skill.schema import HttpResource, PollBackend, Skill
 
 
 def _make_skill_dir(parent, name: str, manifest_content: str, skill_md: str = None):
@@ -70,6 +70,80 @@ actions:
     data_schema_id: poster.styles
 """
 
+RICH_POSTER_MANIFEST = """\
+name: xd-poster-studio-v2
+display_name: xd-poster-studio-v2
+description: poster rich manifest
+skill_md_path: SKILL.md
+api:
+  base_url_env: XD_POSTER_STUDIO_BASE_URL
+  local_base_url: http://localhost:8090
+  discover:
+    characters:
+      method: GET
+      path: /api/characters
+  step1:
+    method: POST
+    path: /api/generate-step1-only
+    content_type: application/json
+  step2:
+    submit_method: POST
+    submit_path: /api/generate-v2
+    submit_content_type: application/json
+    job_id_field: v2JobId
+    poll_path_template: /api/poll-v2/{job_id}
+    status_field: status
+    done_value: completed
+    failed_value: failed
+    error_field: error
+    result_path: images[0].url
+    internal_poll_interval_sec: 6
+    internal_poll_timeout_sec: 300
+params: []
+output:
+  type: image_url
+  display_as: feishu_image
+"""
+
+RICH_TOWN_MANIFEST = """\
+name: xd-town-studio
+description: town rich manifest
+skill_md_path: SKILL.md
+api:
+  base_url_env: XD_TOWN_STUDIO_BASE_URL
+  local_base_url: http://localhost:8085
+  discover:
+    season_characters:
+      method: GET
+      path: /api/season-characters
+    artdam_library:
+      method: GET
+      path: /api/artdam-library
+  single:
+    submit_method: POST
+    submit_path: /api/generate
+    submit_content_type: application/json
+    job_id_field: jobId
+  fusion:
+    submit_method: POST
+    submit_path: /api/generate-fusion
+    submit_content_type: application/json
+    job_id_field: jobId
+  poll:
+    poll_path_template: /api/poll/{job_id}
+    status_field: status
+    done_value: completed
+    failed_value: failed
+    error_field: error
+    result_path: images[0].url
+    internal_poll_interval_sec: 5
+    internal_poll_timeout_sec: 300
+params: []
+output:
+  type: image_url
+  display_as: feishu_image
+"""
+
 
 def test_load_skills_finds_skill_with_manifest(tmp_path, monkeypatch):
     import src.skill.registry as reg
@@ -126,6 +200,54 @@ def test_load_skill_preserves_action_data_schema_metadata(tmp_path, monkeypatch)
 
     assert skills["test-action-schema"].actions[0].name == "get_styles"
     assert skills["test-action-schema"].actions[0].data_schema_id == "poster.styles"
+
+
+def test_load_rich_poster_manifest_normalizes_to_poll_backend(tmp_path, monkeypatch):
+    import src.skill.registry as reg
+
+    _make_skill_dir(
+        tmp_path,
+        "poster",
+        RICH_POSTER_MANIFEST,
+        skill_md="```http\nGET /api/characters\nPOST /api/generate-step1-only\n```",
+    )
+    monkeypatch.setattr(reg, "SKILLS_DIR", str(tmp_path))
+    monkeypatch.setenv("XD_POSTER_STUDIO_BASE_URL", "http://poster.local:8090")
+
+    skill = load_skills()["xd-poster-studio-v2"]
+
+    assert isinstance(skill.api, PollBackend)
+    assert skill.api.base_url == "http://poster.local:8090"
+    assert skill.api.submit_path == "/api/generate-v2"
+    assert skill.api.poll_path_template == "/api/poll-v2/{job_id}"
+    assert skill.api.poll_interval_sec == 6
+    resource = skill.lazy_resources["lookup_characters"]
+    assert isinstance(resource, HttpResource)
+    assert resource.url == "http://poster.local:8090/api/characters"
+
+
+def test_load_rich_town_manifest_uses_fusion_backend_and_discovery(tmp_path, monkeypatch):
+    import src.skill.registry as reg
+
+    _make_skill_dir(
+        tmp_path,
+        "town",
+        RICH_TOWN_MANIFEST,
+        skill_md="```http\nGET /api/season-characters\nGET /api/artdam-library\n```",
+    )
+    monkeypatch.setattr(reg, "SKILLS_DIR", str(tmp_path))
+    monkeypatch.delenv("XD_TOWN_STUDIO_BASE_URL", raising=False)
+
+    skill = load_skills()["xd-town-studio"]
+
+    assert isinstance(skill.api, PollBackend)
+    assert skill.api.base_url == "http://localhost:8085"
+    assert skill.api.submit_path == "/api/generate-fusion"
+    assert skill.api.job_id_field == "jobId"
+    assert skill.api.poll_path_template == "/api/poll/{job_id}"
+    assert skill.api.poll_interval_sec == 5
+    assert skill.lazy_resources["lookup_characters"].url == "http://localhost:8085/api/season-characters"
+    assert skill.lazy_resources["lookup_options"].url == "http://localhost:8085/api/artdam-library"
 
 
 def test_load_skills_skips_broken_manifest(tmp_path, monkeypatch):

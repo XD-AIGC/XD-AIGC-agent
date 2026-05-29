@@ -16,7 +16,10 @@ manifest 内所有路径（skill_md_path / lazy_resources.*）都相对 manifest
 无 manifest.yaml 的目录（如同事的 Claude Code skill）被跳过，agent 看不到。
 """
 import logging
+import os
 from pathlib import Path
+import re
+from typing import Any
 
 import yaml
 
@@ -35,12 +38,122 @@ def _ensure_api_type(raw: dict) -> dict:
     return raw
 
 
+def _normalize_manifest(raw: dict[str, Any]) -> dict[str, Any]:
+    """Convert rich XD-AIGC-skills manifests into the runtime schema."""
+    if not isinstance(raw, dict):
+        return raw
+    normalized = dict(raw)
+    api = normalized.get("api")
+    if isinstance(api, dict) and "type" not in api:
+        _normalize_rich_api(normalized, api)
+    return _ensure_api_type(normalized)
+
+
+def _normalize_rich_api(raw: dict[str, Any], api: dict[str, Any]) -> None:
+    backend = _rich_poll_backend(api)
+    if backend is None:
+        return
+    raw["api"] = backend
+    lazy_resources = raw.setdefault("lazy_resources", {})
+    if isinstance(lazy_resources, dict):
+        lazy_resources.update({
+            name: value
+            for name, value in _discover_lazy_resources(api, backend.get("base_url")).items()
+            if name not in lazy_resources
+        })
+
+
+def _rich_poll_backend(api: dict[str, Any]) -> dict[str, Any] | None:
+    submit_cfg = _pick_submit_config(api)
+    if submit_cfg is None:
+        return None
+    poll_cfg = api.get("poll") if isinstance(api.get("poll"), dict) else submit_cfg
+    poll_path = poll_cfg.get("poll_path_template") or submit_cfg.get("poll_path_template")
+    if not poll_path:
+        return None
+
+    backend: dict[str, Any] = {
+        "type": "poll",
+        "submit_path": submit_cfg["submit_path"],
+        "submit_method": submit_cfg.get("submit_method", "POST"),
+        "submit_content_type": submit_cfg.get("submit_content_type", "application/json"),
+        "poll_path_template": poll_path,
+        "job_id_field": submit_cfg.get("job_id_field", "v2JobId"),
+        "status_field": poll_cfg.get("status_field", "status"),
+        "done_value": poll_cfg.get("done_value", "completed"),
+        "failed_value": poll_cfg.get("failed_value", "failed"),
+        "error_field": poll_cfg.get("error_field", "error"),
+        "result_path": poll_cfg.get("result_path", "images[0].url"),
+        "poll_interval_sec": poll_cfg.get("internal_poll_interval_sec", poll_cfg.get("poll_interval_sec", 3)),
+        "poll_timeout_sec": poll_cfg.get("internal_poll_timeout_sec", poll_cfg.get("poll_timeout_sec", 300)),
+    }
+    base_url = _resolve_base_url(api)
+    if base_url:
+        backend["base_url"] = base_url
+    return backend
+
+
+def _pick_submit_config(api: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ("step2", "fusion", "single"):
+        cfg = api.get(key)
+        if isinstance(cfg, dict) and cfg.get("submit_path"):
+            return cfg
+    for cfg in api.values():
+        if isinstance(cfg, dict) and cfg.get("submit_path"):
+            return cfg
+    return None
+
+
+def _resolve_base_url(api: dict[str, Any]) -> str | None:
+    if api.get("base_url"):
+        return api["base_url"]
+    env_name = api.get("base_url_env")
+    if env_name:
+        env_value = os.getenv(str(env_name))
+        if env_value:
+            return env_value
+    return api.get("local_base_url")
+
+
+def _discover_lazy_resources(api: dict[str, Any], base_url: str | None) -> dict[str, dict[str, Any]]:
+    discover = api.get("discover")
+    if not base_url or not isinstance(discover, dict):
+        return {}
+    resources: dict[str, dict[str, Any]] = {}
+    for key, cfg in discover.items():
+        if not isinstance(cfg, dict) or not cfg.get("path"):
+            continue
+        name = _lazy_resource_name(str(key), resources)
+        resources[name] = {
+            "type": "http",
+            "url": base_url.rstrip("/") + cfg["path"],
+            "method": cfg.get("method", "GET"),
+            "cache_ttl_sec": cfg.get("cache_ttl_sec", 300),
+        }
+    return resources
+
+
+def _lazy_resource_name(key: str, existing: dict[str, Any]) -> str:
+    lowered = key.lower()
+    if "character" in lowered and "lookup_characters" not in existing:
+        return "lookup_characters"
+    if any(token in lowered for token in ("library", "option", "scene")) and "lookup_options" not in existing:
+        return "lookup_options"
+    base = "lookup_" + re.sub(r"[^a-zA-Z0-9]+", "_", key).strip("_").lower()
+    name = base or "lookup_resource"
+    idx = 2
+    while name in existing:
+        name = f"{base}_{idx}"
+        idx += 1
+    return name
+
+
 def _load_skill_dir(skill_dir: Path) -> Skill | None:
     """从一个 skill 目录加载 manifest.yaml + 同目录 SKILL.md（可选）+ 解析路径。"""
     manifest = skill_dir / "manifest.yaml"
     if not manifest.exists():
         return None  # 无 manifest 的目录跳过（如 Claude Code skill）
-    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    raw = _normalize_manifest(yaml.safe_load(manifest.read_text(encoding="utf-8")))
 
     skill_md_relpath = raw.pop("skill_md_path", None)
     if skill_md_relpath:
@@ -68,7 +181,7 @@ def _load_skill_dir(skill_dir: Path) -> Skill | None:
     if isinstance(api_section, dict) and api_section.get("base_url"):
         _register_http_resource_url(api_section["base_url"])
 
-    return Skill.model_validate(_ensure_api_type(raw))
+    return Skill.model_validate(raw)
 
 
 def _register_http_resource_url(url: str) -> None:
