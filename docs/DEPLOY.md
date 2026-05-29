@@ -86,6 +86,24 @@ sudo vim /etc/xd-aigc-agent/.env  # 填 FEISHU_APP_SECRET / LLM_API_KEY
 - `FEISHU_APP_SECRET`：[飞书开放平台](https://open.feishu.cn/app/cli_aa99420199f9dbd8) → 凭证与基础信息
 - `LLM_API_KEY`：找 LLM proxy 维护者拿 bot 专属 service token（不要用 Johnny 个人 key！）
 
+### 2.2b Runtime dry-run 观测标签
+默认保持 v1 标签：
+
+```env
+AGENT_RUNTIME_DRY_RUN_TARGET=v1
+AGENT_RUNTIME_DRY_RUN_V2_PERCENT=0
+```
+
+此开关只记录稳定 canary 标签，不切换执行路径。完整 SOP 见 `docs/RUNTIME-DRY-RUN.md`。
+
+调整后重启服务并看日志：
+
+```bash
+sudo vim /etc/xd-aigc-agent/.env
+sudo systemctl restart xd-aigc-agent
+sudo journalctl -u xd-aigc-agent --since '5 min ago' | grep RUNTIME_DRY_RUN
+```
+
 ### 2.3 跑健康检查（部署前自检）
 ```bash
 sudo docker run --rm --network=host --env-file=/etc/xd-aigc-agent/.env \

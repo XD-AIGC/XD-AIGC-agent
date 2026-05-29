@@ -42,7 +42,8 @@ from src.skill.provenance import filter_updated_params
 from src.skill.registry import get_registry
 from src.skill.schema import Skill, PollBackend, HttpResource
 from src.http_client.allowlist import allowed_client
-from src.config import FEISHU_APP_ID, FEISHU_APP_SECRET
+from src.config import AGENT_RUNTIME_DRY_RUN, FEISHU_APP_ID, FEISHU_APP_SECRET
+from src.runtime_dry_run import choose_runtime_label
 import time
 
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
@@ -521,6 +522,11 @@ _store = SessionStore()
 _job_controller = JobController(redis_getter=lambda: getattr(_store, "redis", None))
 _step1_cache = Step1Cache()
 _client = build_client()
+log.info(
+    "[RUNTIME_DRY_RUN] target=%s v2_percent=%s behavior=observability_only",
+    AGENT_RUNTIME_DRY_RUN.target,
+    AGENT_RUNTIME_DRY_RUN.v2_percent,
+)
 
 
 def _response_composer() -> ResponseComposer:
@@ -1091,6 +1097,15 @@ async def _process(data) -> None:
 
 async def _process_locked(message_id: str, msg_type: str, content: dict, user_id: str) -> None:
     text, image_key = _normalize_message(msg_type, content)
+    runtime_label = choose_runtime_label(user_id, AGENT_RUNTIME_DRY_RUN)
+    # Dry-run only: current PR records canary labels but does not dispatch a different runtime.
+    log.debug(
+        "[RUNTIME_DRY_RUN] user=%s label=%s target=%s v2_percent=%s behavior=observability_only",
+        user_id,
+        runtime_label,
+        AGENT_RUNTIME_DRY_RUN.target,
+        AGENT_RUNTIME_DRY_RUN.v2_percent,
+    )
     session = await _load_conversation_session(user_id)
 
     # 智能路径 1：用户一次性给了 text + image（典型场景：群里 @bot 配图说意图）

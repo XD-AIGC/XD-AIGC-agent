@@ -15,7 +15,7 @@
 | **P1 状态机** | State machine + TurnClassifier + ResponseComposer | 1 | 中（行为可见）|
 | **P2 异步运行时** | JobController 拆三个 PR：idempotency → worker → cancel/timeout | 3 | 高（依赖 R1 / R3）|
 | **P3 Prompt 精简** | SkillRuntime + 收窄 SkillRuntimeAction | 1 | 中（prompt 回归）|
-| **P4 Eval + 灰度** | transcript eval 全绿 + AGENT_RUNTIME=v2 灰度 | 1 | 中（线上回归）|
+| **P4 Eval + 灰度** | transcript eval 全绿 + runtime dry-run 标签；真实 dispatch 另起 PR | 1 | 中（线上回归）|
 
 约束：每个 PR 体积 ≤ 500 行 diff；CI 必须包含 `bash ci/check-banned-apis.sh`。
 
@@ -141,7 +141,7 @@
 ## P4：Eval + 灰度部署（原 P6）
 
 - transcript eval ≥ 12 条全绿（含 S27 行为轨迹断言）
-- L20-1 feature flag：`AGENT_RUNTIME=v2`（按 user_id hash 灰度）
+- L20-1 dry-run 标签：`AGENT_RUNTIME_DRY_RUN_TARGET=v2`（按 user_id hash 分桶；不切换执行路径）
 - 灰度 10% → 1 周观察 → 50% → 1 周 → 100%
 - 监控：`phase=running_job` 异常率、duplicate submit 计数、delayed reply 失败率
 - 回退 SOP：flip flag 回 v1，不清 Redis，靠 TTL=1h 自然消化；接受 `running_job` 通知丢失（D2）
@@ -171,7 +171,7 @@
 
 ## 待确认问题（PLAN 层）
 
-1. `AGENT_RUNTIME=v2` 灰度比例阈值（10/50/100% 是建议，可调）
+1. 真实 runtime dispatch 的灰度比例阈值（10/50/100% 是建议，可调）
 2. `/取消`、`/重新开始`、`/帮助` 是否要作为用户可见斜杠命令？（当前用 deterministic classifier）
 3. 运行中是否需要中间进度消息（如"已生成 step1，正在合成…"），还是只在开始和完成时回？
 
