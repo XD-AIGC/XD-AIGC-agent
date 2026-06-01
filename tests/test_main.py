@@ -718,6 +718,60 @@ async def test_completed_session_adjustment_still_reaches_skill_llm(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_completed_modify_can_reask_existing_param(monkeypatch):
+    from src import main as main_mod
+    from src.conversation.session import ConversationPhase, ConversationSession
+    from src.orchestrator.schema import BotAction
+    from src.skill.schema import Skill, HttpBackend, SkillOutput, SkillParam
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session)
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(
+        return_value=BotAction(
+            action="ask_param",
+            param_name="actionDesc",
+            message="想换成什么动作？",
+        )
+    )
+    fake_skill = Skill(
+        name="xd-poster-gen",
+        description="生成海报",
+        api=HttpBackend(endpoint_path="/api/test", content_type="application/json"),
+        params=[SkillParam(name="actionDesc", type="text", prompt_to_user="动作")],
+        output=SkillOutput(type="text", display_as="feishu_text"),
+        system_prompt_core="test",
+    )
+    session = ConversationSession(
+        phase=ConversationPhase.completed,
+        mode="skill",
+        skill_name="xd-poster-gen",
+        collected_params={"characters": ["harry"], "actionDesc": "踢球"},
+        completed=True,
+    )
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
+
+    await main_mod._agentic_loop("换一个动作", session, "user-1", "msg-1")
+
+    skill_decide.assert_awaited_once()
+    reply_text.assert_called_once_with(main_mod._client, "msg-1", "想换成什么动作？")
+    assert session.pending_param == "actionDesc"
+    assert session.phase == ConversationPhase.collecting
+    assert session.completed is False
+    assert session.collected_params["actionDesc"] == "踢球"
+    assert store.saved == ("user-1", session)
+
+
+@pytest.mark.asyncio
 async def test_active_skill_greeting_does_not_submit(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession

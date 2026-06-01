@@ -13,6 +13,7 @@ from pathlib import Path
 
 from src.orchestrator.llm import router_decide, skill_decide
 from src.conversation.classifier import (
+    ClassifiedTurn,
     TurnClassifier,
     TurnIntent,
     compact_text,
@@ -1059,6 +1060,17 @@ def _retry_payload(session) -> dict:
     return dict(getattr(session, "collected_params", {}) or {})
 
 
+def _allow_reasking_collected_param_for_modify(
+    *,
+    phase: ConversationPhase,
+    turn: ClassifiedTurn,
+) -> bool:
+    return (
+        phase in {ConversationPhase.completed, ConversationPhase.awaiting_confirmation}
+        and turn.intent == TurnIntent.modify_param
+    )
+
+
 def _move_session_to_skill_runtime_phase(session, transition) -> None:
     if not isinstance(session, ConversationSession) or not transition.allow_skill_runtime:
         return
@@ -1773,6 +1785,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         )
 
         # 应用 LLM 声明的 updated_params
+        accepted_update_keys = set()
         if isinstance(action.updated_params, dict) and action.updated_params:
             skill = get_registry().get(session.skill_name) if session.skill_name else None
             accepted_updates, rejected_updates = filter_updated_params(
@@ -1786,6 +1799,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 log.warning("[PROVENANCE] rejected updated_params=%s", rejected_updates)
             if accepted_updates:
                 session.collected_params.update(accepted_updates)
+                accepted_update_keys = set(accepted_updates)
 
         # 自动 continue：lazy load 资源后再问 LLM
         if action.action in ("lookup_characters", "lookup_options"):
@@ -1875,6 +1889,18 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
         if action.action == "ask_param":
             if action.param_name and action.param_name in session.collected_params:
+                if (
+                    action.param_name not in accepted_update_keys
+                    and _allow_reasking_collected_param_for_modify(phase=phase, turn=turn)
+                ):
+                    session.pending_param = action.param_name
+                    skill = get_registry().get(session.skill_name) if session.skill_name else None
+                    base_msg = action.message or "请提供新的参数值。"
+                    full_msg = base_msg + _enum_options_block(skill, action.param_name)
+                    await reply_text(_client, message_id, full_msg)
+                    _append_history(session, "assistant", full_msg)
+                    await _store.save(user_id, session)
+                    return
                 session.pending_param = None
                 current_text = (
                     f"[参数 `{action.param_name}` 已收集为 "
