@@ -14,10 +14,16 @@
     {
       "message_id": "<MSG_1>",
       "text": "今天是周几",
+      "router_actions": [
+        {
+          "action": "out_of_scope",
+          "message": "我目前可以帮你做这些事。"
+        }
+      ],
       "expect": {
-        "reply_text_contains": ["我主要处理 AIGC 工具任务"],
+        "reply_text_contains": ["我目前可以帮你做这些事"],
         "trace": {
-          "router_llm_calls": 0,
+          "router_llm_calls": 1,
           "skill_llm_calls": 0,
           "skill_action_calls": 0,
           "submit_job_calls": 0,

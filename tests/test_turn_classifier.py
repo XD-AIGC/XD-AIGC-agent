@@ -35,10 +35,18 @@ def test_classifier_detects_completed_runtime_question():
     assert result.intent == TurnIntent.ask_runtime
 
 
-def test_classifier_treats_completed_date_question_as_unrelated():
+def test_classifier_routes_completed_unknown_turns_to_llm_router():
     result = TurnClassifier().classify("hello, 今天是周几啊", phase=ConversationPhase.completed)
 
-    assert result.intent == TurnIntent.unrelated
+    assert result.intent == TurnIntent.needs_llm
+    assert result.source == "llm"
+
+
+def test_classifier_routes_completed_new_generation_request_to_llm_router():
+    result = TurnClassifier().classify("心动小镇海报生成", phase=ConversationPhase.completed)
+
+    assert result.intent == TurnIntent.needs_llm
+    assert result.source == "llm"
 
 
 def test_classifier_does_not_treat_cancel_with_object_as_cancel_command():

@@ -96,7 +96,9 @@ class TurnClassifier:
             return cancel
         if is_skill_chitchat(text):
             return ClassifiedTurn(TurnIntent.chitchat, reason="short chitchat")
-        if normalized_phase in {ConversationPhase.completed, ConversationPhase.running_job}:
+        if normalized_phase == ConversationPhase.completed:
+            return ClassifiedTurn(TurnIntent.needs_llm, source="llm", reason="completed turn needs router")
+        if normalized_phase == ConversationPhase.running_job:
             return ClassifiedTurn(TurnIntent.unrelated, reason="boundary turn")
         return ClassifiedTurn(TurnIntent.needs_llm, source="llm", reason="no deterministic match")
 

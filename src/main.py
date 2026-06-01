@@ -1017,6 +1017,38 @@ def _move_session_to_skill_runtime_phase(session, transition) -> None:
     sync_legacy_fields(session)
 
 
+def _start_completed_router_reentry(session) -> None:
+    session.skill_name = None
+    session.initial_intent = None
+    session.collected_params = {}
+    session.pending_param = None
+    session.loaded_resources = {}
+    if isinstance(session, ConversationSession):
+        session.phase = ConversationPhase.selecting_skill
+        session.last_options = None
+        session.active_job = None
+        session.artifacts = {}
+        session.completed_result = None
+        session.mode = "router"
+        session.completed = False
+        session.state = "idle"
+    else:
+        session.mode = "router"
+        session.completed = False
+        session.state = "idle"
+        if hasattr(session, "last_options"):
+            session.last_options = None
+
+
+def _restore_conversation_session(target, snapshot) -> None:
+    if isinstance(target, ConversationSession) and isinstance(snapshot, ConversationSession):
+        for field_name in ConversationSession.model_fields:
+            setattr(target, field_name, getattr(snapshot, field_name))
+        return
+    if hasattr(target, "__dict__") and hasattr(snapshot, "__dict__"):
+        target.__dict__.update(snapshot.__dict__)
+
+
 def _mark_skill_complete(session, message_id: str) -> None:
     session.pending_param = None
     session.loaded_resources = {}
@@ -1539,6 +1571,17 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
     turn = _classify_turn(text, session)
     phase = _phase_for_session(session)
     transition = _state_machine.transition(phase, turn.intent)
+    completed_router_reentry = (
+        phase == ConversationPhase.completed
+        and session.mode == "skill"
+        and transition.next_phase == ConversationPhase.selecting_skill
+        and transition.allow_skill_runtime
+    )
+    completed_reentry_snapshot = (
+        session.model_copy(deep=True)
+        if completed_router_reentry and hasattr(session, "model_copy")
+        else None
+    )
 
     if phase == ConversationPhase.running_job:
         if await _handle_running_job_turn(session, user_id, message_id, text, turn.intent):
@@ -1603,7 +1646,10 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
         await _store.save(user_id, session)
         return
 
-    _move_session_to_skill_runtime_phase(session, transition)
+    if completed_router_reentry:
+        _start_completed_router_reentry(session)
+    else:
+        _move_session_to_skill_runtime_phase(session, transition)
 
     # Skill mode 下的问候/含糊短句不要交给 Skill LLM，避免误判为继续 submit。
     if (
@@ -1722,8 +1768,15 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
 
         # 终态 action：处理后退出循环
         if action.action == "out_of_scope":
-            await reply_text(_client, message_id, _out_of_scope_msg())
-            await _store.clear(user_id)
+            msg = _out_of_scope_msg()
+            await reply_text(_client, message_id, msg)
+            if completed_reentry_snapshot is not None:
+                _restore_conversation_session(session, completed_reentry_snapshot)
+                _append_history(session, "user", text)
+                _append_history(session, "assistant", msg)
+                await _store.save(user_id, session)
+            else:
+                await _store.clear(user_id)
             return
 
         if action.action == "reply":

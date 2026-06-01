@@ -95,6 +95,8 @@ class StateMachine:
             return Transition(ConversationPhase.running_job, [SideEffect.submit_job])
         if intent == TurnIntent.modify_param:
             return Transition(ConversationPhase.collecting, [SideEffect.invoke_skill_runtime], True)
+        if intent in {TurnIntent.needs_llm, TurnIntent.start_skill}:
+            return Transition(ConversationPhase.selecting_skill, [SideEffect.invoke_skill_runtime], True)
         if intent == TurnIntent.ask_capability:
             return Transition(ConversationPhase.completed, [SideEffect.reply_capability])
         if intent == TurnIntent.ask_runtime:

@@ -603,6 +603,7 @@ async def test_completed_session_unrelated_question_does_not_submit(monkeypatch)
 
     store = FakeStore()
     reply_text = AsyncMock()
+    router_decide = AsyncMock(return_value=BotAction(action="out_of_scope"))
     skill_decide = AsyncMock(return_value=BotAction(action="submit", submit_payload={"bad": "payload"}))
     execute = AsyncMock(return_value=ExecuteResult(kind="text", text="done"))
     fake_skill = Skill(
@@ -615,6 +616,7 @@ async def test_completed_session_unrelated_question_does_not_submit(monkeypatch)
     )
     monkeypatch.setattr(main_mod, "_store", store)
     monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "router_decide", router_decide)
     monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
     monkeypatch.setattr(main_mod, "execute", execute)
     monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-gen": fake_skill})
@@ -628,13 +630,16 @@ async def test_completed_session_unrelated_question_does_not_submit(monkeypatch)
 
     await main_mod._agentic_loop("hello, 今天是周几啊", session, "user-1", "msg-1")
 
+    router_decide.assert_awaited_once()
     skill_decide.assert_not_called()
     execute.assert_not_called()
     reply_text.assert_called_once()
     sent = reply_text.call_args[0][2]
-    assert "AIGC 工具任务" in sent
-    assert "要继续这个任务" in sent
+    assert "我目前可以帮你做这些事" in sent
     assert store.saved[0] == "user-1"
+    assert store.saved[1].mode == "skill"
+    assert store.saved[1].skill_name == "xd-poster-gen"
+    assert store.saved[1].completed is True
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,14 @@ def test_completed_modify_returns_to_collecting_and_allows_runtime():
     assert transition.allow_skill_runtime
 
 
+def test_completed_unknown_turn_reenters_skill_selection_via_runtime():
+    transition = StateMachine().transition(ConversationPhase.completed, TurnIntent.needs_llm)
+
+    assert transition.next_phase == ConversationPhase.selecting_skill
+    assert transition.side_effects == [SideEffect.invoke_skill_runtime]
+    assert transition.allow_skill_runtime
+
+
 def test_collecting_cancel_clears_context():
     transition = StateMachine().transition(ConversationPhase.collecting, TurnIntent.cancel)
 
