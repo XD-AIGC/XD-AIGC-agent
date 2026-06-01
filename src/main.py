@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -441,6 +442,41 @@ def _is_ready_for_backend_submit(skill: Skill | None, session) -> bool:
 
 def _preview_confirmation_msg() -> str:
     return "这张预览可以吗？确认后我继续生成最终结果；要调整也可以直接说。"
+
+
+def _short_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _agent_trace_id(user_id: str, message_id: str, iter_count: int, action_name: str | None) -> str:
+    action_part = re.sub(r"[^a-zA-Z0-9]+", "-", action_name or "action").strip("-")[:32] or "action"
+    return f"fa-{metric_user_key(user_id)}-{_short_hash(message_id)}-{iter_count}-{action_part}"
+
+
+def _with_agent_trace_params(
+    action_params: dict | None,
+    *,
+    trace_id: str,
+    skill_name: str | None,
+    action_name: str | None,
+) -> dict:
+    params = dict(action_params or {})
+    trace = {
+        "traceId": trace_id,
+        "source": "xd-aigc-agent",
+        "skill": skill_name,
+        "action": action_name,
+    }
+    json_body = params.get("json")
+    if isinstance(json_body, dict):
+        body = dict(json_body)
+        body.setdefault("agentTraceId", trace_id)
+        body.setdefault("agentTrace", trace)
+        params["json"] = body
+    elif "json" not in params:
+        params.setdefault("agentTraceId", trace_id)
+        params.setdefault("agentTrace", trace)
+    return params
 
 
 async def _prepare_result_reply(result) -> _PreparedResultReply:
@@ -2022,8 +2058,21 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 await _store.save(user_id, session)
                 return
 
+            trace_id = _agent_trace_id(user_id, message_id, iter_count, action.action_name)
+            traced_action_params = _with_agent_trace_params(
+                action.action_params,
+                trace_id=trace_id,
+                skill_name=session.skill_name,
+                action_name=action.action_name,
+            )
+            log.info(
+                "[TRACE] %s call_skill_action skill=%s action=%s",
+                trace_id,
+                session.skill_name,
+                action.action_name,
+            )
             try:
-                obs = await execute_skill_action(skill, action.action_name, action.action_params)
+                obs = await execute_skill_action(skill, action.action_name, traced_action_params)
             except SkillActionError as e:
                 obs = SkillActionObservation(status="error", summary=str(e))
             except Exception as e:

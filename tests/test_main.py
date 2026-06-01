@@ -1160,6 +1160,10 @@ async def test_preview_file_id_action_pauses_for_confirmation(monkeypatch):
         "这张预览可以吗？确认后我继续生成最终结果；要调整也可以直接说。",
     )
     assert execute_skill_action.await_count == 2
+    first_call_params = execute_skill_action.await_args_list[0].args[2]
+    assert first_call_params["json"]["agentTraceId"].startswith("fa-")
+    assert first_call_params["json"]["agentTrace"]["source"] == "xd-aigc-agent"
+    assert first_call_params["json"]["agentTrace"]["action"] == "generate_step1_only"
     assert skill_decide.await_count == 1
 
 
