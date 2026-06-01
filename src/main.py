@@ -1064,11 +1064,13 @@ def _allow_reasking_collected_param_for_modify(
     *,
     phase: ConversationPhase,
     turn: ClassifiedTurn,
+    user_text: str,
 ) -> bool:
-    return (
+    was_completed_modify = (
         phase in {ConversationPhase.completed, ConversationPhase.awaiting_confirmation}
         and turn.intent == TurnIntent.modify_param
     )
+    return was_completed_modify or is_completed_skill_continuation(user_text)
 
 
 def _move_session_to_skill_runtime_phase(session, transition) -> None:
@@ -1891,7 +1893,11 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             if action.param_name and action.param_name in session.collected_params:
                 if (
                     action.param_name not in accepted_update_keys
-                    and _allow_reasking_collected_param_for_modify(phase=phase, turn=turn)
+                    and _allow_reasking_collected_param_for_modify(
+                        phase=phase,
+                        turn=turn,
+                        user_text=user_provenance_text,
+                    )
                 ):
                     session.pending_param = action.param_name
                     skill = get_registry().get(session.skill_name) if session.skill_name else None
