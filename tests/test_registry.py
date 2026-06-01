@@ -86,6 +86,8 @@ api:
     method: POST
     path: /api/generate-step1-only
     content_type: application/json
+    returns_file_id_field: fileId
+    image_path_template: /api/image/{file_id}
   step2:
     submit_method: POST
     submit_path: /api/generate-v2
@@ -221,9 +223,16 @@ def test_load_rich_poster_manifest_normalizes_to_poll_backend(tmp_path, monkeypa
     assert skill.api.submit_path == "/api/generate-v2"
     assert skill.api.poll_path_template == "/api/poll-v2/{job_id}"
     assert skill.api.poll_interval_sec == 6
+    assert skill.image_path_template == "/api/image/{file_id}"
     resource = skill.lazy_resources["lookup_characters"]
     assert isinstance(resource, HttpResource)
     assert resource.url == "http://poster.local:8090/api/characters"
+
+    from src.skill.actions import build_action_catalog
+
+    catalog = build_action_catalog(skill)
+    assert catalog["get_image"].method == "GET"
+    assert catalog["get_image"].path_template == "/api/image/{file_id}"
 
 
 def test_load_rich_town_manifest_prefers_single_backend_and_discovery(tmp_path, monkeypatch):

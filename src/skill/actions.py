@@ -107,6 +107,8 @@ def build_action_catalog(skill: Skill) -> dict[str, SkillHttpAction]:
     elif isinstance(api, PollBackend):
         _add_action(actions, api.submit_method, api.submit_path, "manifest_api", preferred="manifest_submit")
         _add_action(actions, "GET", api.poll_path_template, "manifest_api", preferred="manifest_poll")
+    if skill.image_path_template:
+        _add_action(actions, "GET", skill.image_path_template, "manifest_api", preferred="get_image")
 
     _apply_action_metadata(actions, skill)
     return actions

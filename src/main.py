@@ -51,6 +51,30 @@ import time
 _MAX_AUTO_LOOKUPS_PER_TURN = 3  # 防 LLM 无限 lookup
 _MAX_SKILL_ACTIONS_PER_TURN = 8  # 防 LLM 在单轮里无限调 skill action
 _MAX_AGENT_LOOP_ITERATIONS = 20
+_IMAGE_FILE_ID_KEYS = (
+    "fileId",
+    "file_id",
+    "step1FileId",
+    "cachedStep1FileId",
+    "characterActionFileId",
+)
+_IMAGE_FILE_ID_CONTAINER_KEYS = (
+    "payload",
+    "data",
+    "result",
+    "metadata",
+    "artifacts",
+    "images",
+    "items",
+    "intermediateImages",
+)
+_CACHEABLE_IMAGE_PARAM_NAMES = (
+    "cachedStep1FileId",
+    "step1FileId",
+    "fileId",
+    "file_id",
+    "characterActionFileId",
+)
 
 # Per-user 串行化锁：同 user 的消息不并发处理，避免 submit 阻塞期间新消息进 LLM 瞎回
 _user_locks: dict[str, asyncio.Lock] = {}
@@ -434,19 +458,40 @@ async def _send_skill_action_artifact(message_id: str, obs: SkillActionObservati
 
 def _extract_image_file_id(data) -> str | None:
     """Find a toolbox fileId in common image-generation response shapes."""
-    if not isinstance(data, dict):
+    return _extract_image_file_id_from_value(data)
+
+
+def _extract_image_file_id_from_value(value, depth: int = 0) -> str | None:
+    if depth > 5:
         return None
-    file_id = data.get("fileId")
-    if isinstance(file_id, str) and file_id:
-        return file_id
-    images = data.get("images")
-    if isinstance(images, list) and images:
-        first = images[0]
-        if isinstance(first, dict):
-            file_id = first.get("fileId")
+    if isinstance(value, dict):
+        for key in _IMAGE_FILE_ID_KEYS:
+            file_id = value.get(key)
             if isinstance(file_id, str) and file_id:
                 return file_id
+        for key in _IMAGE_FILE_ID_CONTAINER_KEYS:
+            nested = value.get(key)
+            if isinstance(nested, (dict, list)):
+                file_id = _extract_image_file_id_from_value(nested, depth + 1)
+                if file_id:
+                    return file_id
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                file_id = _extract_image_file_id_from_value(item, depth + 1)
+                if file_id:
+                    return file_id
     return None
+
+
+def _remember_image_file_id_param(skill: Skill, session, file_id: str) -> None:
+    if session is None or not file_id:
+        return
+    skill_param_names = {param.name for param in skill.params}
+    for name in _CACHEABLE_IMAGE_PARAM_NAMES:
+        if name in skill_param_names:
+            session.collected_params[name] = file_id
+            return
 
 
 def _extract_job_id(data, skill: Skill) -> str | None:
@@ -460,7 +505,12 @@ def _extract_job_id(data, skill: Skill) -> str | None:
     return None
 
 
-async def _maybe_send_skill_image_by_file_id(skill: Skill, message_id: str, obs: SkillActionObservation) -> None:
+async def _maybe_send_skill_image_by_file_id(
+    skill: Skill,
+    message_id: str,
+    obs: SkillActionObservation,
+    session=None,
+) -> None:
     """Deterministically fetch/send image previews when an action returns only fileId."""
     if obs.status != "success" or obs.content_bytes is not None or obs.artifact.get("sent_to_user"):
         return
@@ -468,8 +518,10 @@ async def _maybe_send_skill_image_by_file_id(skill: Skill, message_id: str, obs:
     if not file_id:
         return
     try:
+        log.info("[SKILL_ACTION] fetching image by fileId=%s skill=%s", file_id[:32], skill.name)
         image_obs = await execute_skill_action(skill, "get_image", {"path_params": {"fileId": file_id}})
-    except SkillActionError:
+    except SkillActionError as e:
+        log.warning("[SKILL_ACTION] cannot fetch image by fileId skill=%s: %s", skill.name, e)
         return
     except Exception:
         log.exception("failed to fetch skill image by fileId")
@@ -478,6 +530,7 @@ async def _maybe_send_skill_image_by_file_id(skill: Skill, message_id: str, obs:
     if image_obs.artifact.get("sent_to_user"):
         obs.artifact["sent_to_user"] = True
         obs.artifact["image_fileId"] = file_id
+        _remember_image_file_id_param(skill, session, file_id)
 
 
 async def _send_execute_result(message_id: str, result: ExecuteResult, skill: Skill) -> bool:
@@ -1928,7 +1981,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 session.loaded_resources[action.action_name] = obs.for_prompt()
 
             await _send_skill_action_artifact(message_id, obs)
-            await _maybe_send_skill_image_by_file_id(skill, message_id, obs)
+            await _maybe_send_skill_image_by_file_id(skill, message_id, obs, session)
             job_id = _extract_job_id(obs.data, skill)
             if job_id:
                 payload = _skill_action_job_payload(action.action_params)

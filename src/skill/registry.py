@@ -54,6 +54,9 @@ def _normalize_rich_api(raw: dict[str, Any], api: dict[str, Any]) -> None:
     if backend is None:
         return
     raw["api"] = backend
+    image_path_template = _pick_image_path_template(api)
+    if image_path_template and not raw.get("image_path_template"):
+        raw["image_path_template"] = image_path_template
     lazy_resources = raw.setdefault("lazy_resources", {})
     if isinstance(lazy_resources, dict):
         lazy_resources.update({
@@ -113,6 +116,17 @@ def _resolve_base_url(api: dict[str, Any]) -> str | None:
         if env_value:
             return env_value
     return api.get("local_base_url")
+
+
+def _pick_image_path_template(api: dict[str, Any]) -> str | None:
+    for key in ("step1", "single", "fusion", "image", "result"):
+        cfg = api.get(key)
+        if not isinstance(cfg, dict):
+            continue
+        value = cfg.get("image_path_template") or cfg.get("image_path") or cfg.get("get_image_path")
+        if isinstance(value, str) and value.startswith("/"):
+            return value
+    return None
 
 
 def _discover_lazy_resources(api: dict[str, Any], base_url: str | None) -> dict[str, dict[str, Any]]:

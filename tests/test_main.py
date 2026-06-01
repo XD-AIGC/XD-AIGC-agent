@@ -7,6 +7,7 @@ from src.main import (
     _strip_mentions,
     _normalize_message,
     _load_lazy_resource,
+    _extract_image_file_id,
     _is_retry,
     _is_capability_question,
     _is_completed_skill_continuation,
@@ -85,6 +86,15 @@ def test_normalize_post_first_image_wins():
     }
     _, key = _normalize_message("post", content)
     assert key == "first"
+
+
+def test_extract_image_file_id_supports_common_skill_shapes():
+    assert _extract_image_file_id({"fileId": "file-1"}) == "file-1"
+    assert _extract_image_file_id({"file_id": "file-2"}) == "file-2"
+    assert _extract_image_file_id({"step1FileId": "file-3"}) == "file-3"
+    assert _extract_image_file_id({"cachedStep1FileId": "file-4"}) == "file-4"
+    assert _extract_image_file_id({"intermediateImages": {"characterActionFileId": "file-5"}}) == "file-5"
+    assert _extract_image_file_id({"payload": {"images": [{"file_id": "file-6"}]}}) == "file-6"
 
 
 # ---- _load_lazy_resource ----
@@ -903,6 +913,60 @@ async def test_get_skill_action_result_is_cached_as_loaded_resource(monkeypatch)
     assert "list_season_characters" in store.saved[-1][1].loaded_resources
     assert "annie" in store.saved[-1][1].loaded_resources["list_season_characters"]
     reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_file_id_skill_action_fetches_and_sends_image(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import UserSession
+    from src.skill.actions import SkillActionObservation
+    from src.skill.schema import PollBackend, Skill, SkillOutput, SkillParam
+
+    session = UserSession(mode="skill", skill_name="xd-poster-studio-v2")
+    skill = Skill(
+        name="xd-poster-studio-v2",
+        description="poster",
+        api=PollBackend(type="poll", submit_path="/api/generate-v2", poll_path_template="/api/poll/{job_id}"),
+        params=[
+            SkillParam(
+                name="cachedStep1FileId",
+                type="text",
+                required=False,
+                prompt_to_user="已确认的白底角色动作图",
+            )
+        ],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="```http\nPOST /api/generate-step1-only\n```",
+        image_path_template="/api/image/{file_id}",
+    )
+    obs = SkillActionObservation(
+        status="success",
+        summary="generate_step1_only 调用成功",
+        data={"status": "completed", "fileId": "6a"},
+        source_name="generate_step1_only",
+    )
+    image_obs = SkillActionObservation(
+        status="success",
+        summary="get_image 返回图片",
+        content_bytes=b"PNG",
+        data_schema_id="image.binary",
+    )
+
+    execute_skill_action = AsyncMock(return_value=image_obs)
+
+    async def mark_sent(_message_id, sent_obs):
+        sent_obs.artifact["sent_to_user"] = True
+        return True
+
+    monkeypatch.setattr(main_mod, "execute_skill_action", execute_skill_action)
+    monkeypatch.setattr(main_mod, "_send_skill_action_artifact", AsyncMock(side_effect=mark_sent))
+
+    await main_mod._maybe_send_skill_image_by_file_id(skill, "msg-1", obs, session)
+
+    execute_skill_action.assert_awaited_once_with(skill, "get_image", {"path_params": {"fileId": "6a"}})
+    assert obs.artifact["sent_to_user"] is True
+    assert obs.artifact["image_fileId"] == "6a"
+    assert session.collected_params["cachedStep1FileId"] == "6a"
 
 
 @pytest.mark.asyncio

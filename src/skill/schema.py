@@ -80,6 +80,8 @@ class Skill(BaseModel):
     api: SkillBackend = Field(discriminator="type")
     params: list[SkillParam]
     output: SkillOutput
+    # Optional skill-level image fetch path for actions that return toolbox fileId refs.
+    image_path_template: Optional[str] = None
     # Always-on Core：Skill Mode 期间每轮都注入 LLM 的简短规则
     system_prompt_core: Optional[str] = None
     # Lazy-load 资源：key 是 action 名（如 'lookup_characters'）；
