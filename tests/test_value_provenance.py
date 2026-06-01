@@ -185,6 +185,28 @@ def test_provenance_rejects_new_free_text_without_user_text_match():
     assert rejected == {"actionDesc": "value_without_provenance"}
 
 
+def test_provenance_allows_pending_text_param_composed_answer():
+    from src.skill.provenance import filter_updated_params
+
+    session = UserSession(
+        mode="skill",
+        skill_name="xd-poster-gen",
+        pending_param="actionDesc",
+        collected_params={"actionDesc": "坐着野餐"},
+    )
+    skill = _skill([SkillParam(name="actionDesc", type="text", prompt_to_user="动作")])
+
+    accepted, rejected = filter_updated_params(
+        {"actionDesc": "角色站在野餐布旁边整理野餐篮，不要坐着"},
+        session=session,
+        skill=skill,
+        user_text="还是野餐，别坐着就行",
+    )
+
+    assert accepted == {"actionDesc": "角色站在野餐布旁边整理野餐篮，不要坐着"}
+    assert rejected == {}
+
+
 def test_provenance_allows_new_free_text_from_user_text():
     from src.skill.provenance import filter_updated_params
 

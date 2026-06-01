@@ -1077,6 +1077,93 @@ async def test_file_id_skill_action_fetches_and_sends_image(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_preview_file_id_action_pauses_for_confirmation(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import BotAction, UserSession
+    from src.skill.actions import SkillActionObservation
+    from src.skill.schema import PollBackend, Skill, SkillOutput, SkillParam
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = None
+
+        async def save(self, user_id, session):
+            self.saved = (user_id, session.model_copy(deep=True))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    skill_decide = AsyncMock(
+        return_value=BotAction(
+            action="call_skill_action",
+            action_name="generate_step1_only",
+            action_params={"json": {"actionDesc": "野餐", "characters": ["bill"]}},
+        )
+    )
+    step_obs = SkillActionObservation(
+        status="success",
+        summary="generate_step1_only 调用成功",
+        data={"status": "completed", "fileId": "6a"},
+        source_name="generate_step1_only",
+    )
+    image_obs = SkillActionObservation(
+        status="success",
+        summary="get_image 返回图片",
+        content_bytes=b"PNG",
+        data_schema_id="image.binary",
+    )
+    execute_skill_action = AsyncMock(side_effect=[step_obs, image_obs])
+
+    async def mark_sent(_message_id, sent_obs):
+        if sent_obs.content_bytes is None:
+            return False
+        sent_obs.artifact["sent_to_user"] = True
+        return True
+
+    fake_skill = Skill(
+        name="xd-poster-studio-v2",
+        description="poster",
+        api=PollBackend(type="poll", submit_path="/api/generate-v2", poll_path_template="/api/poll/{job_id}"),
+        params=[
+            SkillParam(name="actionDesc", type="text", prompt_to_user="动作"),
+            SkillParam(name="characters", type="json", prompt_to_user="角色"),
+            SkillParam(
+                name="cachedStep1FileId",
+                type="text",
+                required=False,
+                prompt_to_user="已确认的白底角色动作图",
+            ),
+        ],
+        output=SkillOutput(type="image_url", display_as="feishu_image"),
+        system_prompt_core="```http\nPOST /api/generate-step1-only\n```",
+        image_path_template="/api/image/{file_id}",
+    )
+    session = UserSession(
+        mode="skill",
+        skill_name="xd-poster-studio-v2",
+        collected_params={"actionDesc": "野餐", "characters": ["bill"]},
+    )
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "skill_decide", skill_decide)
+    monkeypatch.setattr(main_mod, "execute_skill_action", execute_skill_action)
+    monkeypatch.setattr(main_mod, "_send_skill_action_artifact", AsyncMock(side_effect=mark_sent))
+    monkeypatch.setattr(main_mod, "get_registry", lambda: {"xd-poster-studio-v2": fake_skill})
+
+    await main_mod._agentic_loop("还是野餐，别坐着就行", session, "user-1", "msg-1")
+
+    assert "generate_step1_only" in store.saved[1].loaded_resources
+    assert store.saved[1].collected_params["cachedStep1FileId"] == "6a"
+    reply_text.assert_awaited_once_with(
+        main_mod._client,
+        "msg-1",
+        "这张预览可以吗？确认后我继续生成最终结果；要调整也可以直接说。",
+    )
+    assert execute_skill_action.await_count == 2
+    assert skill_decide.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_cached_get_skill_action_is_not_reexecuted(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import UserSession

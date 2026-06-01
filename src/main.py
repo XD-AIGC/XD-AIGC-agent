@@ -404,6 +404,22 @@ def _is_cacheable_skill_action(skill: Skill, action_name: str | None) -> bool:
     return bool(action and action.method == "GET")
 
 
+def _is_preview_file_id_observation(skill: Skill, action_name: str | None, obs: SkillActionObservation) -> bool:
+    return (
+        action_name not in (None, "get_image", "manifest_submit", "manifest_poll")
+        and isinstance(skill.api, PollBackend)
+        and obs.status == "success"
+        and _has_direct_image_file_id(obs.data)
+    )
+
+
+def _has_direct_image_file_id(data) -> bool:
+    return isinstance(data, dict) and any(
+        isinstance(data.get(key), str) and bool(data.get(key))
+        for key in _IMAGE_FILE_ID_KEYS
+    )
+
+
 def _missing_required_param_names(skill: Skill, collected_params: dict) -> list[str]:
     return [
         param.name
@@ -421,6 +437,10 @@ def _is_ready_for_backend_submit(skill: Skill | None, session) -> bool:
     ):
         return False
     return not _missing_required_param_names(skill, session.collected_params)
+
+
+def _preview_confirmation_msg() -> str:
+    return "这张预览可以吗？确认后我继续生成最终结果；要调整也可以直接说。"
 
 
 async def _prepare_result_reply(result) -> _PreparedResultReply:
@@ -1977,13 +1997,16 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 await reply_text(_client, message_id, "内部错误：skill 丢失")
                 return
             cacheable_action = _is_cacheable_skill_action(skill, action.action_name)
-            if cacheable_action and action.action_name in session.loaded_resources:
+            if action.action_name in session.loaded_resources:
                 repeated_skill_action_count += 1
                 missing = _missing_required_param_names(skill, session.collected_params)
                 if missing:
                     next_step = f"请基于已加载资源继续收集缺失参数 {missing}，输出 ask_param/reply。"
                 else:
-                    next_step = "所有必填参数已齐，请基于已加载资源构造 submit_payload 并输出 submit。"
+                    next_step = (
+                        "所有必填参数已齐，请基于已加载资源和 SKILL.md 选择下一步："
+                        "如果有最终生成 POST action，就调用下一步 action；否则构造 submit_payload 并输出 submit。"
+                    )
                 current_text = (
                     f"[skill action `{action.action_name}` 本轮已经执行过，结果在已加载资源中。"
                     f"{next_step}禁止重复 call_skill_action。]"
@@ -2009,12 +2032,20 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                     status="error",
                     summary=f"{action.action_name or 'unknown'} 调用异常: {type(e).__name__}: {e}",
                 )
-            if cacheable_action and action.action_name and obs.status == "success":
+            preview_file_id_action = _is_preview_file_id_observation(skill, action.action_name, obs)
+            if (cacheable_action or preview_file_id_action) and action.action_name and obs.status == "success":
                 session.loaded_resources[action.action_name] = obs.for_prompt()
 
             await _send_skill_action_artifact(message_id, obs)
             await _maybe_send_skill_image_by_file_id(skill, message_id, obs, session)
             job_id = _extract_job_id(obs.data, skill)
+            if preview_file_id_action and not job_id and obs.artifact.get("sent_to_user"):
+                session.pending_param = None
+                msg = _preview_confirmation_msg()
+                await reply_text(_client, message_id, msg)
+                _append_history(session, "assistant", msg)
+                await _store.save(user_id, session)
+                return
             if job_id:
                 payload = _skill_action_job_payload(action.action_params)
                 submission = await _begin_existing_skill_action_job(

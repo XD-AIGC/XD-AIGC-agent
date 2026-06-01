@@ -52,6 +52,9 @@ def filter_updated_params(
         if _is_valid_option_or_enum_value(key, new_value, param, session):
             accepted[key] = new_value
             continue
+        if _is_pending_text_param_answer(key, new_value, param, session):
+            accepted[key] = new_value
+            continue
         if param is not None and param.type == "json" and _value_appears_in_trusted_sources(new_value, trusted_text, session):
             accepted[key] = new_value
             continue
@@ -71,6 +74,16 @@ def filter_updated_params(
 
 def _is_valid_artifact_update(key: str, value: Any, trusted_text: str) -> bool:
     return key in _ARTIFACT_PARAM_NAMES and _value_appears_in_text(value, trusted_text)
+
+
+def _is_pending_text_param_answer(key: str, value: Any, param: SkillParam | None, session: Any) -> bool:
+    return (
+        param is not None
+        and param.type == "text"
+        and getattr(session, "pending_param", None) == key
+        and isinstance(value, str)
+        and bool(value.strip())
+    )
 
 
 def _is_valid_option_or_enum_value(key: str, value: Any, param: SkillParam | None, session: Any) -> bool:
