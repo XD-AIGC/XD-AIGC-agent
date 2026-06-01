@@ -118,8 +118,8 @@ def format_action_catalog(skill: Skill) -> str:
         return "（当前 skill 没有声明可直接调用的 HTTP action）"
     lines = [
         "【可调用的 skill actions（只能调用这里列出的 action_name）】",
-        "调用格式：action=call_skill_action, action_name=<name>, action_params={...}",
-        "GET 推荐 action_params={\"path_params\": {...}, \"query\": {...}}；POST 推荐 action_params={\"json\": {...}}。",
+        "调用格式：action=call_skill_action, action_name=<name>, action_params=[{\"key\":\"json\",\"value_json\":\"{...}\"}]",
+        "GET 推荐 action_params=[{\"key\":\"path_params\",\"value_json\":\"{...}\"},{\"key\":\"query\",\"value_json\":\"{...}\"}]；POST 推荐 action_params=[{\"key\":\"json\",\"value_json\":\"{...}\"}]。",
     ]
     for action in catalog.values():
         placeholders = ", ".join(_PLACEHOLDER_RE.findall(action.path_template)) or "无"

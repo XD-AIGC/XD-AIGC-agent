@@ -53,16 +53,39 @@ def test_skill_runtime_action_rejects_unknown_action():
         SkillRuntimeAction(action="do_evil")
 
 
+def test_skill_runtime_wire_action_decodes_json_entries():
+    from src.orchestrator.schema import JsonEntry
+    from src.skill.runtime import SkillRuntimeWireAction
+
+    wire = SkillRuntimeWireAction(
+        action="call_skill_action",
+        action_name="generate",
+        action_params=[
+            JsonEntry(key="json", value_json='{"characters": ["annie"], "ratio": "3:2"}'),
+        ],
+        updated_params=[
+            JsonEntry(key="characters", value_json='["annie"]'),
+            JsonEntry(key="ratio", value_json='"3:2"'),
+        ],
+    )
+
+    action = wire.to_runtime_action()
+
+    assert action.action == "call_skill_action"
+    assert action.action_params == {"json": {"characters": ["annie"], "ratio": "3:2"}}
+    assert action.updated_params == {"characters": ["annie"], "ratio": "3:2"}
+
+
 @pytest.mark.asyncio
 async def test_skill_decide_uses_skill_runtime_action_schema(monkeypatch):
     from src.orchestrator import llm as llm_mod
     from src.orchestrator.schema import UserSession
-    from src.skill.runtime import SkillRuntimeAction
+    from src.skill.runtime import SkillRuntimeAction, SkillRuntimeWireAction
 
     captured = {}
 
     class _Message:
-        parsed = SkillRuntimeAction(action="reply", message="ok")
+        parsed = SkillRuntimeWireAction(action="reply", message="ok")
 
     class _Choice:
         message = _Message()
@@ -85,7 +108,7 @@ async def test_skill_decide_uses_skill_runtime_action_schema(monkeypatch):
 
     action = await llm_mod.skill_decide("继续", UserSession(mode="skill"), _fake_skill())
 
-    assert captured["response_format"] is SkillRuntimeAction
+    assert captured["response_format"] is SkillRuntimeWireAction
     assert isinstance(action, SkillRuntimeAction)
 
 
@@ -93,12 +116,12 @@ async def test_skill_decide_uses_skill_runtime_action_schema(monkeypatch):
 async def test_skill_decide_dedupes_current_message_with_v2_history(monkeypatch):
     from src.conversation.session import ConversationSession, Message
     from src.orchestrator import llm as llm_mod
-    from src.skill.runtime import SkillRuntimeAction
+    from src.skill.runtime import SkillRuntimeWireAction
 
     captured = {}
 
     class _Message:
-        parsed = SkillRuntimeAction(action="reply", message="ok")
+        parsed = SkillRuntimeWireAction(action="reply", message="ok")
 
     class _Choice:
         message = _Message()

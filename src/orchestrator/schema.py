@@ -1,4 +1,6 @@
-from typing import Literal, Optional
+import json
+from typing import Any, Literal, Optional
+
 from pydantic import BaseModel, Field
 
 from src.conversation.options import OptionSet
@@ -32,6 +34,51 @@ class BotAction(BaseModel):
     action_name: Optional[str] = None
     action_params: dict = Field(default_factory=dict)
     updated_params: dict = Field(default_factory=dict)
+
+
+class JsonEntry(BaseModel):
+    """Strict-schema key/value entry for LLM-emitted dynamic JSON objects."""
+
+    key: str
+    value_json: str
+
+    def decoded_value(self) -> Any:
+        try:
+            return json.loads(self.value_json)
+        except (TypeError, json.JSONDecodeError):
+            return self.value_json
+
+
+def json_entries_to_dict(entries: list[JsonEntry] | None) -> dict[str, Any]:
+    if not entries:
+        return {}
+    return {entry.key: entry.decoded_value() for entry in entries if entry.key}
+
+
+class RouterAction(BaseModel):
+    """Router wire schema without dynamic object fields.
+
+    Bedrock Claude rejects JSON schemas containing dynamic object maps. Router
+    mode does not need payload maps, so this wire schema converts back to the
+    broader internal BotAction.
+    """
+
+    action: Action
+    skill_name: Optional[str] = None
+    param_name: Optional[str] = None
+    param_value: Optional[str] = None
+    message: Optional[str] = None
+    action_name: Optional[str] = None
+
+    def to_bot_action(self) -> BotAction:
+        return BotAction(
+            action=self.action,
+            skill_name=self.skill_name,
+            param_name=self.param_name,
+            param_value=self.param_value,
+            message=self.message,
+            action_name=self.action_name,
+        )
 
 
 class UserSession(BaseModel):

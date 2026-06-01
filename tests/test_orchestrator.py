@@ -1,12 +1,17 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from src.orchestrator.schema import BotAction, UserSession
+from src.orchestrator.schema import BotAction, RouterAction, UserSession
 from src.orchestrator.llm import decide, skill_decide
 from src.skill.schema import HttpBackend, Skill, SkillOutput
+from src.skill.runtime import SkillRuntimeWireAction
 
 
-def _mock_response(action: str, **kwargs) -> MagicMock:
-    parsed = BotAction(action=action, **kwargs)
+def _mock_response(action: str, *, mode: str = "router", **kwargs) -> MagicMock:
+    parsed = (
+        SkillRuntimeWireAction(action=action, **kwargs)
+        if mode == "skill"
+        else RouterAction(action=action, **kwargs)
+    )
     choice = MagicMock()
     choice.message.parsed = parsed
     resp = MagicMock()
@@ -77,7 +82,7 @@ async def test_skill_decide_does_not_duplicate_current_user_message():
 
     with patch("src.orchestrator.llm._client") as mock_client:
         mock_client.beta.chat.completions.parse = AsyncMock(
-            return_value=_mock_response("reply", message="ok")
+            return_value=_mock_response("reply", mode="skill", message="ok")
         )
         await skill_decide("bill", session, skill)
 

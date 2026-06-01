@@ -1,6 +1,31 @@
 import pytest
 from pydantic import ValidationError
+from openai.lib._pydantic import to_strict_json_schema
 from src.orchestrator.schema import BotAction, UserSession
+
+
+def _assert_no_dynamic_additional_properties(schema):
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            if key == "additionalProperties":
+                assert value is False
+            else:
+                _assert_no_dynamic_additional_properties(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            _assert_no_dynamic_additional_properties(item)
+
+
+def test_router_response_schema_is_bedrock_strict():
+    from src.orchestrator.schema import RouterAction
+
+    _assert_no_dynamic_additional_properties(to_strict_json_schema(RouterAction))
+
+
+def test_skill_response_schema_is_bedrock_strict():
+    from src.skill.runtime import SkillRuntimeWireAction
+
+    _assert_no_dynamic_additional_properties(to_strict_json_schema(SkillRuntimeWireAction))
 
 
 def test_botaction_valid_actions():

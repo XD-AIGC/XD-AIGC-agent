@@ -10,10 +10,10 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
-from src.orchestrator.schema import BotAction, UserSession
+from src.orchestrator.schema import BotAction, RouterAction, UserSession
 from src.skill.actions import format_action_catalog
 from src.skill.registry import get_registry
-from src.skill.runtime import SkillRuntimeAction
+from src.skill.runtime import SkillRuntimeAction, SkillRuntimeWireAction
 from src.skill.schema import Skill
 
 _client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
@@ -68,9 +68,9 @@ async def router_decide(user_message: str, session: UserSession) -> BotAction:
             {"role": "system", "content": _ROUTER_SYSTEM.format(skills=skill_list)},
             {"role": "user", "content": user_message},
         ],
-        response_format=BotAction,
+        response_format=RouterAction,
     )
-    return resp.choices[0].message.parsed
+    return resp.choices[0].message.parsed.to_bot_action()
 
 
 async def skill_decide(user_message: str, session: UserSession, skill: Skill) -> SkillRuntimeAction:
@@ -101,9 +101,9 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
     resp = await _client.beta.chat.completions.parse(
         model=LLM_MODEL,
         messages=messages,
-        response_format=SkillRuntimeAction,
+        response_format=SkillRuntimeWireAction,
     )
-    return resp.choices[0].message.parsed
+    return resp.choices[0].message.parsed.to_runtime_action()
 
 
 # 向后兼容旧测试
