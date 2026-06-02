@@ -36,6 +36,8 @@ _DEFAULT_3D_MODEL_VERSION = "P1"
 
 _MIVO_PACKAGE_VERSION = "mivo-mcp-0.6.0"
 _DOWNLOAD_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_SUPPORTED_IMAGE_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "2:3", "3:2", "4:5", "5:4")
+_SUPPORTED_IMAGE_RESOLUTIONS = ("1K", "2K", "4K")
 
 MIVO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_tools": {
@@ -75,9 +77,9 @@ MIVO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "ratio": {
                     "type": "string",
                     "default": "1:1",
-                    "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "2:3", "3:2", "4:5", "5:4", "1:4", "4:1", "1:8", "8:1", "21:9"],
+                    "enum": list(_SUPPORTED_IMAGE_RATIOS),
                 },
-                "resolution": {"type": "string", "default": "1K", "enum": ["512", "1K", "2K", "4K"]},
+                "resolution": {"type": "string", "default": "1K", "enum": list(_SUPPORTED_IMAGE_RESOLUTIONS)},
                 "quality": {"type": "string", "default": "auto", "enum": ["auto", "low", "medium", "high"]},
                 "modelVersion": {
                     "type": "string",
@@ -594,8 +596,7 @@ def _poll_result_payload(job_id: str, data: dict[str, Any]) -> dict[str, Any]:
 def _build_generation_payload(prompt: str, args: dict[str, Any], model_version: str) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "prompt": prompt,
-        "imgRatio": args.get("ratio") or args.get("imgRatio") or _DEFAULT_RATIO,
-        "modelVersion": model_version,
+        "imgRatio": _normalize_image_ratio(args.get("ratio") or args.get("imgRatio") or _DEFAULT_RATIO),
         "n": 1,
     }
     images = _normalize_images(args.get("images") or args.get("fileIds") or [])
@@ -604,8 +605,7 @@ def _build_generation_payload(prompt: str, args: dict[str, Any], model_version: 
     if model_version == "gpt-image-2":
         payload["quality"] = _normalize_quality(args.get("quality") or "auto")
         return payload
-    payload["resolution"] = args.get("resolution") or _DEFAULT_RESOLUTION
-    payload["provider"] = "genai"
+    payload["resolution"] = _normalize_image_resolution(args.get("resolution") or _DEFAULT_RESOLUTION)
     return payload
 
 
@@ -683,6 +683,24 @@ def _normalize_quality(value: Any) -> str:
     normalized = aliases.get(normalized, normalized)
     if normalized not in {"auto", "low", "medium", "high"}:
         raise SkillActionError("gpt-image-2 quality 只支持 auto/low/medium/high")
+    return normalized
+
+
+def _normalize_image_ratio(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return _DEFAULT_RATIO
+    normalized = value.strip()
+    if normalized not in _SUPPORTED_IMAGE_RATIOS:
+        raise SkillActionError(f"Mivo 图片比例只支持: {', '.join(_SUPPORTED_IMAGE_RATIOS)}")
+    return normalized
+
+
+def _normalize_image_resolution(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return _DEFAULT_RESOLUTION
+    normalized = value.strip().upper()
+    if normalized not in _SUPPORTED_IMAGE_RESOLUTIONS:
+        raise SkillActionError(f"Mivo 图片分辨率只支持: {', '.join(_SUPPORTED_IMAGE_RESOLUTIONS)}")
     return normalized
 
 

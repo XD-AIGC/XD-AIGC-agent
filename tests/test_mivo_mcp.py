@@ -83,11 +83,27 @@ async def test_mivo_submit_gen_image_calls_action_mcp():
     assert body["modelType"] == "NANOBANANA"
     assert body["payload"]["prompt"] == "小镇野餐"
     assert body["payload"]["imgRatio"] == "3:2"
-    assert body["payload"]["provider"] == "genai"
+    assert body["payload"]["resolution"] == "2K"
+    assert "provider" not in body["payload"]
+    assert "modelVersion" not in body["payload"]
     token_call = async_cli.post.await_args_list[0]
     assert token_call.kwargs["json"] == {"id": "", "sub": "mivo_user_sub_test", "name": ""}
     submit_call = async_cli.post.await_args_list[-1]
     assert submit_call.kwargs["headers"]["Authorization"] == "Bearer session_token"
+
+
+@pytest.mark.asyncio
+async def test_mivo_submit_gen_image_rejects_unsupported_resolution_and_ratio():
+    with pytest.raises(SkillActionError, match="分辨率只支持"):
+        await execute_mivo_mcp_action(
+            "submit_gen_image",
+            {"arguments": {"prompt": "test", "resolution": "512"}},
+        )
+    with pytest.raises(SkillActionError, match="比例只支持"):
+        await execute_mivo_mcp_action(
+            "submit_gen_image",
+            {"arguments": {"prompt": "test", "ratio": "21:9"}},
+        )
 
 
 @pytest.mark.asyncio
