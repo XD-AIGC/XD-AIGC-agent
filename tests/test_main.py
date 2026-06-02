@@ -3,9 +3,12 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+import src.main as main_module
 from src.main import (
     _strip_mentions,
     _normalize_message,
+    _remember_feishu_image,
+    _resolve_mivo_action_params,
     _load_lazy_resource,
     _extract_image_file_id,
     _is_retry,
@@ -13,6 +16,7 @@ from src.main import (
     _is_completed_skill_continuation,
     _resolve_numbered_character_reply,
 )
+from src.conversation.session import ConversationSession
 from src.conversation.options import OptionItem, OptionSet
 from src.skill.schema import Skill, HttpBackend, SkillOutput
 
@@ -86,6 +90,38 @@ def test_normalize_post_first_image_wins():
     }
     _, key = _normalize_message("post", content)
     assert key == "first"
+
+
+@pytest.mark.asyncio
+async def test_resolve_mivo_params_uploads_current_feishu_image(monkeypatch):
+    session = ConversationSession()
+    _remember_feishu_image(session, "mid_1", "img_1")
+    monkeypatch.setattr(main_module, "download_image", AsyncMock(return_value=b"\x89PNG\r\n\x1a\nabc"))
+    monkeypatch.setattr(main_module, "upload_image_bytes", AsyncMock(return_value="mivo_file_1"))
+
+    params = await _resolve_mivo_action_params(
+        "submit_gen_image",
+        {"arguments": {"prompt": "基于这张图优化", "images": ["feishu://image/current"]}},
+        session,
+    )
+
+    assert params == {"arguments": {"prompt": "基于这张图优化", "images": ["mivo_file_1"]}}
+    main_module.download_image.assert_awaited_once()
+    main_module.upload_image_bytes.assert_awaited_once()
+    assert session.artifacts["last_feishu_image"]["mivo_file_id"] == "mivo_file_1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_mivo_params_auto_injects_current_image_for_segment(monkeypatch):
+    session = ConversationSession()
+    _remember_feishu_image(session, "mid_1", "img_1")
+    monkeypatch.setattr(main_module, "download_image", AsyncMock(return_value=b"\xff\xd8\xffabc"))
+    monkeypatch.setattr(main_module, "upload_image_bytes", AsyncMock(return_value="mivo_file_1"))
+
+    params = await _resolve_mivo_action_params("segment_image", {"arguments": {}}, session)
+
+    assert params == {"arguments": {"image": "mivo_file_1"}}
+    main_module.upload_image_bytes.assert_awaited_once()
 
 
 def test_extract_image_file_id_supports_common_skill_shapes():

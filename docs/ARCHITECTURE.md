@@ -10,10 +10,11 @@
   ↓
 toolbox-bot (Docker, L20_1)
   消息层 [lark-oapi WS / Redis 去重 / per-user 锁] (仅 reply)
-  控制层 [Skill Registry → LLM (BotAction) → Skill Executor]
+  控制层 [Skill Registry → LLM (BotAction) → Skill Executor / Mivo MCP]
   状态层 [Redis per user_id session]
   ↓ HTTP only (白名单拦截器)
 Nginx Gateway (L20_1:80) → 28 工具 API → L20_0 GPU
+Mivo Hub (`MIVO_ENDPOINT`) ← 受控全局 `call_mivo_mcp`
 ```
 
 预估代码量 < 600 行（不含 skill 定义）。
@@ -37,7 +38,11 @@ LLM 不允许自由文本动作。所有输出走 Pydantic：
 
 ```python
 class BotAction(BaseModel):
-    action: Literal["select_skill", "ask_param", "call_api", "reply", "out_of_scope"]
+    action: Literal[
+        "select_skill", "lookup_characters", "lookup_options",
+        "call_skill_action", "call_mivo_mcp", "ask_param",
+        "await_confirmation", "submit", "exit_skill", "reply", "out_of_scope",
+    ]
     skill_name: Optional[str] = None
     param_name: Optional[str] = None
     param_value: Optional[str] = None
@@ -45,6 +50,26 @@ class BotAction(BaseModel):
 ```
 
 Skill 范围外 → 强制 `out_of_scope` → 固定回复"我只能帮你做：..."
+
+## Mivo MCP 全局能力
+
+Mivo 不作为某个 toolbox skill 的后端，而是 agent 全局窄工具：Router/Skill 均可输出
+`call_mivo_mcp`，但只能调用 `MIVO_MCP_ALLOWED_TOOLS` 白名单内的工具。
+
+当前按 `mivo-mcp-0.6.0` 注册入口对齐的工具：
+
+| 工具 | 能力 |
+|---|---|
+| `submit_gen_image` / `poll_result` / `download_file` | 生图、轮询、下载图片 |
+| `segment_image` / `super_resolution_image` | 抠图、超分 |
+| `submit_gen_3d_model` / `poll_3d_result` | 图生/文生 3D、轮询模型文件 |
+| `convert_3d_model_format` | GLB/OBJ/FBX 转换 |
+| `list_tools` | 返回工具目录、schema、飞书图片映射 |
+| `generate_image` | agent 宏：submit + poll + download |
+
+飞书消息里的图片不直接传给 Mivo。agent 使用 `download_image` 取回飞书图片，再上传到
+Mivo `/api/v1/file/`，把 `feishu://image/current` 替换成 Mivo fileId 后写入
+`image` / `images` / `referenceImages` 参数。
 
 ## Skill 系统
 

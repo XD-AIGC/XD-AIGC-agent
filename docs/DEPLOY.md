@@ -82,9 +82,9 @@ sudo chown root:root /etc/xd-aigc-agent/.env
 sudo vim /etc/xd-aigc-agent/.env  # 填 FEISHU_APP_SECRET / LLM_API_KEY
 ```
 
-**密钥来源**：
-- `FEISHU_APP_SECRET`：[飞书开放平台](https://open.feishu.cn/app/cli_aa99420199f9dbd8) → 凭证与基础信息
+**密钥来源**：`FEISHU_APP_SECRET` 从[飞书开放平台](https://open.feishu.cn/app/cli_aa99420199f9dbd8) → 凭证与基础信息获取
 - `LLM_API_KEY`：找 LLM proxy 维护者拿 bot 专属 service token（不要用 Johnny 个人 key！）
+- Mivo 鉴权：使用 toolbox 现用的 `MIVO_USER_SUB` 换 session token；工具白名单见 `MIVO_MCP_ALLOWED_TOOLS`；不要在日志或文档里暴露真值
 
 ### 2.2b Runtime rollout 观测标签
 默认保持 v1 标签：

@@ -30,7 +30,7 @@ def test_skill_response_schema_is_bedrock_strict():
 
 def test_botaction_valid_actions():
     for action in ["select_skill", "lookup_characters", "lookup_options", "ask_param",
-                   "call_skill_action", "await_confirmation", "submit", "exit_skill", "reply", "out_of_scope"]:
+                   "call_skill_action", "call_mivo_mcp", "await_confirmation", "submit", "exit_skill", "reply", "out_of_scope"]:
         b = BotAction(action=action)
         assert b.action == action
 

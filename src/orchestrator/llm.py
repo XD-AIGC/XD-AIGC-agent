@@ -10,6 +10,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from src.mivo_mcp.client import format_mivo_mcp_catalog
 from src.orchestrator.schema import BotAction, RouterAction, UserSession
 from src.skill.actions import format_action_catalog
 from src.skill.registry import get_registry
@@ -65,7 +66,13 @@ async def router_decide(user_message: str, session: UserSession) -> BotAction:
     resp = await _client.beta.chat.completions.parse(
         model=LLM_MODEL,
         messages=[
-            {"role": "system", "content": _ROUTER_SYSTEM.format(skills=skill_list)},
+            {
+                "role": "system",
+                "content": _ROUTER_SYSTEM.format(
+                    skills=skill_list,
+                    mivo_mcp_catalog_block=format_mivo_mcp_catalog(),
+                ),
+            },
             {"role": "user", "content": user_message},
         ],
         response_format=RouterAction,
@@ -84,6 +91,7 @@ async def skill_decide(user_message: str, session: UserSession, skill: Skill) ->
         completed=session.completed,
         loaded_resources_block=_format_loaded_resources(session.loaded_resources),
         action_catalog_block=format_action_catalog(skill),
+        mivo_mcp_catalog_block=format_mivo_mcp_catalog(),
         completed_block=_COMPLETED_GUIDE if session.completed else "",
     )
     # 多轮对话：system + 历史 + 当前 user，让 LLM 看到自己上轮 reply（如 ABC 候选）

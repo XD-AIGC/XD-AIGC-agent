@@ -13,6 +13,7 @@ SkillRuntimeActionName = Literal[
     "lookup_characters",
     "lookup_options",
     "call_skill_action",
+    "call_mivo_mcp",
     "ask_param",
     "await_confirmation",
     "submit",

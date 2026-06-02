@@ -12,6 +12,7 @@ from src.feishu.upload import upload_image
 from src.feishu.download import download_image, download_url
 from pathlib import Path
 
+from src.mivo_mcp.client import execute_mivo_mcp_action, upload_image_bytes
 from src.orchestrator.llm import router_decide, skill_decide
 from src.conversation.classifier import (
     ClassifiedTurn,
@@ -77,6 +78,8 @@ _CACHEABLE_IMAGE_PARAM_NAMES = (
     "file_id",
     "characterActionFileId",
 )
+_MIVO_FEISHU_IMAGE_REF_CURRENT = "feishu://image/current"
+_MIVO_IMAGE_PARAM_KEYS = {"image", "images", "referenceImages"}
 
 # Per-user 串行化锁：同 user 的消息不并发处理，避免 submit 阻塞期间新消息进 LLM 瞎回
 _user_locks: dict[str, asyncio.Lock] = {}
@@ -1588,6 +1591,99 @@ def _normalize_message(msg_type: str, content: dict) -> tuple[str, str | None]:
     return "", None
 
 
+def _remember_feishu_image(session, message_id: str, image_key: str) -> None:
+    """Persist the latest Feishu image reference for global Mivo MCP tools."""
+    session.artifacts["last_feishu_image"] = {
+        "message_id": message_id,
+        "image_key": image_key,
+    }
+    session.loaded_resources["feishu:image"] = (
+        "最近用户消息包含一张飞书图片。调用 Mivo MCP 时，可在 image/images/referenceImages "
+        f"参数中使用 `{_MIVO_FEISHU_IMAGE_REF_CURRENT}`，系统会上传到 Mivo 后替换为 fileId。"
+    )
+
+
+def _mivo_image_hint_text(text: str, session) -> str:
+    artifacts = getattr(session, "artifacts", {}) or {}
+    if not artifacts.get("last_feishu_image"):
+        return text
+    hint = (
+        f"\n[系统：最近用户消息附带飞书图片；如需给 Mivo MCP 传图，"
+        f"使用 {_MIVO_FEISHU_IMAGE_REF_CURRENT}。]"
+    )
+    return text + hint
+
+
+async def _resolve_mivo_action_params(action_name: str | None, action_params: dict | None, session) -> dict:
+    params = json.loads(json.dumps(action_params or {}, ensure_ascii=False))
+    arguments = params.get("arguments")
+    if arguments is None:
+        arguments = params
+    if not isinstance(arguments, dict):
+        return params
+    _inject_current_feishu_image_if_needed(action_name, arguments, session)
+    resolved_arguments = await _resolve_mivo_feishu_refs(arguments, session)
+    if "arguments" in params:
+        params["arguments"] = resolved_arguments
+        return params
+    return resolved_arguments
+
+
+def _inject_current_feishu_image_if_needed(action_name: str | None, arguments: dict, session) -> None:
+    artifacts = getattr(session, "artifacts", {}) or {}
+    if not artifacts.get("last_feishu_image"):
+        return
+    if action_name in {"segment_image", "super_resolution_image"} and not arguments.get("image"):
+        arguments["image"] = _MIVO_FEISHU_IMAGE_REF_CURRENT
+    if action_name == "submit_gen_image" and "images" not in arguments:
+        arguments["images"] = [_MIVO_FEISHU_IMAGE_REF_CURRENT]
+    if action_name == "submit_gen_3d_model" and not any(arguments.get(key) for key in _MIVO_IMAGE_PARAM_KEYS | {"prompt"}):
+        arguments["image"] = _MIVO_FEISHU_IMAGE_REF_CURRENT
+
+
+async def _resolve_mivo_feishu_refs(value, session):
+    if isinstance(value, dict):
+        return {key: await _resolve_mivo_feishu_refs(item, session) for key, item in value.items()}
+    if isinstance(value, list):
+        return [await _resolve_mivo_feishu_refs(item, session) for item in value]
+    if isinstance(value, str) and value.startswith("feishu://image"):
+        return await _upload_last_feishu_image_to_mivo(session, value)
+    return value
+
+
+async def _upload_last_feishu_image_to_mivo(session, ref: str) -> str:
+    artifacts = getattr(session, "artifacts", {}) or {}
+    image_ref = artifacts.get("last_feishu_image")
+    if not isinstance(image_ref, dict):
+        raise SkillActionError("没有可上传到 Mivo 的飞书图片")
+    requested_key = ref.removeprefix("feishu://image/").strip()
+    if requested_key and requested_key != "current" and requested_key != image_ref.get("image_key"):
+        raise SkillActionError("只能引用最近一张飞书图片，或使用 feishu://image/current")
+    cached_file_id = image_ref.get("mivo_file_id")
+    if isinstance(cached_file_id, str) and cached_file_id:
+        return cached_file_id
+    message_id = image_ref.get("message_id")
+    image_key = image_ref.get("image_key")
+    if not isinstance(message_id, str) or not isinstance(image_key, str):
+        raise SkillActionError("飞书图片引用缺少 message_id/image_key")
+    image_bytes = await download_image(_client, message_id, image_key)
+    file_id = await upload_image_bytes("feishu-image.png", image_bytes, _guess_image_mime(image_bytes))
+    image_ref["mivo_file_id"] = file_id
+    if hasattr(session, "artifacts"):
+        session.artifacts["last_feishu_image"] = image_ref
+    return file_id
+
+
+def _guess_image_mime(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
 async def _execute_image_skill(skill_name: str, image_key: str, message_id: str, user_id: str) -> None:
     """下载图片 → 调 skill → 上传结果 → 回图。统一的 image-skill 执行路径。"""
     skill = get_registry().get(skill_name)
@@ -1652,19 +1748,19 @@ async def _process_locked(message_id: str, msg_type: str, content: dict, user_id
         AGENT_RUNTIME_DRY_RUN.v2_percent,
     )
     session = await _load_conversation_session(user_id)
+    if image_key:
+        _remember_feishu_image(session, message_id, image_key)
 
     # 智能路径 1：用户一次性给了 text + image（典型场景：群里 @bot 配图说意图）
     if text and image_key:
-        action = await decide(text, session.model_dump_json())
+        action = await router_decide(_mivo_image_hint_text(text, session), session)
         log.info(f"[ACT] {action}")
         if action.action == "select_skill" and action.skill_name:
             await _execute_image_skill(action.skill_name, image_key, message_id, user_id)
             return
-        # text 不构成 select_skill，回退到纯 image 自动路由
-        single = _single_image_skill()
-        if single:
-            await _execute_image_skill(single, image_key, message_id, user_id)
-            return
+        # 非 select_skill 时进入 agentic loop，让 Router/Skill 有机会调用全局 Mivo MCP。
+        await _agentic_loop(text, session, user_id, message_id)
+        return
 
     # 智能路径 2：多轮对话中正在收图（state=collecting 且 pending=image）
     if image_key and session.state == "collecting" and session.pending_param:
@@ -1678,6 +1774,7 @@ async def _process_locked(message_id: str, msg_type: str, content: dict, user_id
             await _execute_image_skill(single, image_key, message_id, user_id)
             return
         await reply_text(_client, message_id, "你想用这张图做什么？请告诉我。")
+        await _store.save(user_id, session)
         return
 
     # 纯文字路径：Agentic Loop（支持 lazy lookup 自动 continue）
@@ -1818,8 +1915,9 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
             return
         log.info(f"[LOOP iter={iter_count} mode={session.mode} skill={session.skill_name} text={current_text[:60]!r}]")
         try:
+            decision_text = _mivo_image_hint_text(current_text, session)
             if session.mode == "router":
-                action = await router_decide(current_text, session)
+                action = await router_decide(decision_text, session)
             else:
                 skill = get_registry().get(session.skill_name)
                 if skill is None:
@@ -1830,7 +1928,7 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                         session.phase = ConversationPhase.idle
                     await _store.save(user_id, session)
                     continue
-                action = await skill_decide(current_text, session, skill)
+                action = await skill_decide(decision_text, session, skill)
         except Exception as e:
             log.exception("LLM call failed")
             await reply_text(_client, message_id, f"⚠️ AI 暂时不可用（{type(e).__name__}），稍后再试一次。")
@@ -1889,6 +1987,39 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 await reply_text(_client, message_id, "处理超时，请重新描述需求。")
                 await _store.clear(user_id)
                 return
+            continue
+
+        if action.action == "call_mivo_mcp":
+            skill_action_count += 1
+            if skill_action_count > _MAX_SKILL_ACTIONS_PER_TURN:
+                await reply_text(_client, message_id, "处理步骤过多，请重新描述需求或稍后再试。")
+                await _store.save(user_id, session)
+                return
+
+            trace_id = _agent_trace_id(user_id, message_id, iter_count, action.action_name)
+            log.info("[TRACE] %s call_mivo_mcp action=%s", trace_id, action.action_name)
+            try:
+                action_params = await _resolve_mivo_action_params(action.action_name, action.action_params, session)
+                obs = await execute_mivo_mcp_action(action.action_name, action_params)
+            except SkillActionError as e:
+                obs = SkillActionObservation(status="error", summary=str(e))
+            except Exception as e:
+                log.exception("mivo mcp action failed")
+                obs = SkillActionObservation(
+                    status="error",
+                    summary=f"{action.action_name or 'unknown'} 调用异常: {type(e).__name__}: {e}",
+                )
+            obs.artifact["agentTraceId"] = trace_id
+            if action.action_name == "list_tools" and obs.status == "success":
+                session.loaded_resources["mivo_mcp:list_tools"] = obs.for_prompt()
+
+            await _send_skill_action_artifact(message_id, obs)
+            current_text = (
+                f"[Mivo MCP action `{action.action_name}` 已执行，observation 如下。"
+                "请读取结果，保存关键 jobId/fileId 到 updated_params，并继续下一步。]\n"
+                f"{obs.for_prompt()}"
+            )
+            await _store.save(user_id, session)
             continue
 
         # 终态 action：处理后退出循环

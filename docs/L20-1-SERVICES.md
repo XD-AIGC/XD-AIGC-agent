@@ -19,7 +19,7 @@
 | 8000 | toolbox-api | toolbox 主 API |
 | 8080 | comfyui-proxy-default | **ComfyUI 共享代理，不是 toolbox 子工具网关**。`TOOLBOX_BASE_URL` 历史指向此 |
 | 8081/8083 | comfyui-proxy | 指向 L20-0 的 ComfyUI 实例 |
-| 9002 | mcp-server | MCP 协议服务端 |
+| 9002 | mcp-server | toolbox MCP 协议服务端（当前不等同于 Mivo Hub） |
 | 9003 | blender-service | Blender 渲染服务 |
 
 ## 2. toolbox 子工具（agent 真正 submit 的目的地）
@@ -82,6 +82,7 @@ lazy_resources:
 
 - toolbox 子工具的 `.env` 必须含 `ARTDAM_SKILL_TOKEN`（向 ArtDAM 拉角色图），否则 `/api/characters` 可能拉空，submit 时也会失败
 - 8080 ≠ toolbox 网关，是 ComfyUI proxy。早期项目宪法把 `TOOLBOX_BASE_URL` 设到 8080，新 skill 必须用 `api.base_url` 指向具体子工具端口
+- agent 的全局 Mivo 能力不走 9002；它用 `MIVO_ENDPOINT` 加 `MIVO_USER_SUB` 直接调用 Mivo Hub 的 `action=mcp` 受控工具通道（生图、抠图、超分、3D、格式转换）
 - 部分服务（如 ip_char/8013）由其他人维护，不在 `start-all-l20-1.sh` 控制范围，重启需联系 owner
 
 ## 7. 重启 / 排查

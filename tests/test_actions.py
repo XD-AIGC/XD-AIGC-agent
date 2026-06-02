@@ -155,3 +155,22 @@ async def test_execute_skill_action_uses_manifest_data_schema_id():
         "schema_id": "poster.styles",
         "payload": {"items": [{"style": "comic"}]},
     }
+
+
+@pytest.mark.asyncio
+async def test_execute_skill_action_treats_application_failure_as_error():
+    mock_resp = _resp(200, json_data={"status": "failed", "error": "Mivo rate limit"})
+    with patch("src.skill.actions.allowed_client") as mock_cli:
+        async_cli = AsyncMock()
+        async_cli.request = AsyncMock(return_value=mock_resp)
+        mock_cli.return_value.__aenter__.return_value = async_cli
+
+        obs = await execute_skill_action(
+            _skill(),
+            "generate_step1_only",
+            {"json": {"actionDesc": "读书", "characters": ["atara"]}},
+        )
+
+    assert obs.status == "error"
+    assert "失败" in obs.summary
+    assert json.loads(obs.for_prompt())["stop_condition"] == "do not retry the same action without changed parameters"

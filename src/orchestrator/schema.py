@@ -6,15 +6,16 @@ from pydantic import BaseModel, Field
 from src.conversation.options import OptionSet
 
 
-# 9 个 action：
+# 10 个 action：
 #   Router only:   select_skill, reply (greeting), out_of_scope
-#   Skill only:    lookup_characters, lookup_options, call_skill_action, await_confirmation, submit, exit_skill
+#   Skill only:    lookup_characters, lookup_options, call_skill_action, call_mivo_mcp, await_confirmation, submit, exit_skill
 #   通用:          ask_param, reply
 Action = Literal[
     "select_skill",
     "lookup_characters",
     "lookup_options",
     "call_skill_action",
+    "call_mivo_mcp",
     "ask_param",
     "await_confirmation",
     "submit",
@@ -59,8 +60,8 @@ class RouterAction(BaseModel):
     """Router wire schema without dynamic object fields.
 
     Bedrock Claude rejects JSON schemas containing dynamic object maps. Router
-    mode does not need payload maps, so this wire schema converts back to the
-    broader internal BotAction.
+    mode uses JsonEntry for global Mivo MCP arguments, then converts back to
+    the broader internal BotAction.
     """
 
     action: Action
@@ -69,6 +70,7 @@ class RouterAction(BaseModel):
     param_value: Optional[str] = None
     message: Optional[str] = None
     action_name: Optional[str] = None
+    action_params: Optional[list[JsonEntry]] = None
 
     def to_bot_action(self) -> BotAction:
         return BotAction(
@@ -78,6 +80,7 @@ class RouterAction(BaseModel):
             param_value=self.param_value,
             message=self.message,
             action_name=self.action_name,
+            action_params=json_entries_to_dict(self.action_params),
         )
 
 

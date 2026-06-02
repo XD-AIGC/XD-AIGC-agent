@@ -180,9 +180,10 @@ async def execute_skill_action(
         )
 
     data = _response_data(resp, content_type)
+    status = _application_status(data)
     return SkillActionObservation(
-        status="success",
-        summary=f"{action.name} 调用成功",
+        status=status,
+        summary=f"{action.name} 调用{'成功' if status == 'success' else '失败'}",
         data=data,
         data_schema_id=action.data_schema_id,
         source_name=action.name,
@@ -298,6 +299,15 @@ def _response_data(resp, content_type: str) -> Any:
         return resp.json()
     except Exception:
         return text[:_MAX_TEXT_CHARS] + ("...[truncated]" if len(text) > _MAX_TEXT_CHARS else "")
+
+
+def _application_status(data: Any) -> ObservationStatus:
+    if not isinstance(data, dict):
+        return "success"
+    marker = data.get("status") or data.get("state")
+    if marker in {"failed", "error"} or "error" in data:
+        return "error"
+    return "success"
 
 
 def _truncate_data(data: Any) -> Any:
