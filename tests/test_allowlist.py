@@ -43,6 +43,16 @@ async def test_allows_mivo_mcp_url():
 
 
 @pytest.mark.asyncio
+async def test_allows_mivo_download_redirect_url():
+    transport = AllowlistTransport()
+    request = httpx.Request("GET", "https://oa-ai-middle.oss-accelerate.aliyuncs.com/path/output.png?sig=1")
+    mock_response = httpx.Response(200, content=b"image")
+    with patch.object(transport._inner, "handle_async_request", return_value=mock_response):
+        resp = await transport.handle_async_request(request)
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_blocks_non_whitelisted_internal():
     transport = AllowlistTransport()
     request = httpx.Request("GET", "http://10.102.80.15:8080/admin")

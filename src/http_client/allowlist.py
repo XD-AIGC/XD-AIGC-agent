@@ -1,5 +1,5 @@
 import httpx
-from src.config import MIVO_ENDPOINT, TOOLBOX_BASE_URL
+from src.config import MIVO_DOWNLOAD_REDIRECT_PREFIXES, MIVO_ENDPOINT, TOOLBOX_BASE_URL
 
 def _normalize(url: str) -> str:
     # httpx drops default port 80 from http:// URLs; normalise for consistent comparison
@@ -9,6 +9,11 @@ def _normalize(url: str) -> str:
 _ALLOWED_PREFIXES = (
     _normalize(TOOLBOX_BASE_URL),
     _normalize(MIVO_ENDPOINT),
+    *[
+        _normalize(prefix.strip())
+        for prefix in MIVO_DOWNLOAD_REDIRECT_PREFIXES.split(",")
+        if prefix.strip()
+    ],
     "https://open.feishu.cn",
     "https://llm-proxy.tapsvc.com",
 )

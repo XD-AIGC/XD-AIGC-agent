@@ -20,6 +20,10 @@ MIVO_MCP_ALLOWED_TOOLS = os.environ.get(
     "MIVO_MCP_ALLOWED_TOOLS",
     "list_tools,generate_image,submit_gen_image,submit_gen_3d_model,poll_result,poll_3d_result,convert_3d_model_format,segment_image,super_resolution_image,download_file",
 )
+MIVO_DOWNLOAD_REDIRECT_PREFIXES = os.environ.get(
+    "MIVO_DOWNLOAD_REDIRECT_PREFIXES",
+    "https://oa-ai-middle.oss-accelerate.aliyuncs.com,https://oa-ai-middle.oss-cn-shanghai.aliyuncs.com",
+)
 ENV = os.environ.get("ENV", "development")
 AGENT_RUNTIME_DRY_RUN = RuntimeDryRunConfig.from_env(os.environ)
 

@@ -8,11 +8,11 @@ from src.mivo_mcp.client import execute_mivo_mcp_action
 from src.skill.actions import SkillActionError
 
 
-def _resp(status: int, json_data=None, content: bytes = b"") -> httpx.Response:
+def _resp(status: int, json_data=None, content: bytes = b"", headers: dict[str, str] | None = None) -> httpx.Response:
     req = httpx.Request("POST", "https://aigc.xindong.com/")
     if json_data is not None:
-        return httpx.Response(status, json=json_data, request=req)
-    return httpx.Response(status, content=content, request=req)
+        return httpx.Response(status, json=json_data, headers=headers, request=req)
+    return httpx.Response(status, content=content, headers=headers, request=req)
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +123,42 @@ async def test_mivo_download_file_returns_image_bytes():
     assert obs.status == "success"
     assert obs.content_bytes == b"PNG"
     assert obs.data["fileId"] == "file_1"
+
+
+@pytest.mark.asyncio
+async def test_mivo_download_file_follows_allowed_oss_redirect():
+    mivo_client._session_token = {"session": "session_token", "expires_at": 9999999999}
+    with patch("src.mivo_mcp.client.allowed_client") as mock_cli:
+        async_cli = AsyncMock()
+        async_cli.get = AsyncMock(
+            side_effect=[
+                _resp(
+                    307,
+                    headers={"location": "//oa-ai-middle.oss-accelerate.aliyuncs.com/path/output.png?sig=1"},
+                ),
+                _resp(200, content=b"PNG", headers={"content-type": "image/png"}),
+            ]
+        )
+        mock_cli.return_value.__aenter__.return_value = async_cli
+
+        obs = await execute_mivo_mcp_action("download_file", {"arguments": {"fileId": "file_1"}})
+
+    assert obs.status == "success"
+    assert obs.content_bytes == b"PNG"
+    second_call = async_cli.get.await_args_list[1]
+    assert second_call.args[0].startswith("https://oa-ai-middle.oss-accelerate.aliyuncs.com/")
+
+
+@pytest.mark.asyncio
+async def test_mivo_download_file_rejects_untrusted_redirect():
+    mivo_client._session_token = {"session": "session_token", "expires_at": 9999999999}
+    with patch("src.mivo_mcp.client.allowed_client") as mock_cli:
+        async_cli = AsyncMock()
+        async_cli.get = AsyncMock(return_value=_resp(307, headers={"location": "https://evil.com/output.png"}))
+        mock_cli.return_value.__aenter__.return_value = async_cli
+
+        with pytest.raises(SkillActionError, match="重定向目标不在允许列表"):
+            await execute_mivo_mcp_action("download_file", {"arguments": {"fileId": "file_1"}})
 
 
 @pytest.mark.asyncio

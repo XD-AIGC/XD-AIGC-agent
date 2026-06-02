@@ -9,8 +9,14 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any
+from urllib.parse import urljoin
 
-from src.config import MIVO_ENDPOINT, MIVO_MCP_ALLOWED_TOOLS, MIVO_USER_SUB
+from src.config import (
+    MIVO_DOWNLOAD_REDIRECT_PREFIXES,
+    MIVO_ENDPOINT,
+    MIVO_MCP_ALLOWED_TOOLS,
+    MIVO_USER_SUB,
+)
 from src.http_client.allowlist import allowed_client
 from src.skill.actions import SkillActionError, SkillActionObservation
 
@@ -29,6 +35,7 @@ _DEFAULT_3D_MODEL_TYPE = "TRIPO3D"
 _DEFAULT_3D_MODEL_VERSION = "P1"
 
 _MIVO_PACKAGE_VERSION = "mivo-mcp-0.6.0"
+_DOWNLOAD_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 MIVO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_tools": {
@@ -489,6 +496,9 @@ async def _download_file(args: dict[str, Any]) -> SkillActionObservation:
     token = await _get_auth_token()
     async with allowed_client() as client:
         resp = await client.get(_url(_FILE_DOWNLOAD_PATH.format(file_id=file_id)), headers=_auth_headers(token), timeout=60.0)
+        if resp.status_code in _DOWNLOAD_REDIRECT_STATUSES:
+            download_url = _validated_download_redirect(resp.headers.get("location", ""))
+            resp = await client.get(download_url, timeout=60.0)
     resp.raise_for_status()
     content_type = resp.headers.get("content-type", "")
     data = {"fileId": file_id, "contentType": content_type, "byteCount": len(resp.content)}
@@ -509,6 +519,22 @@ async def _download_file(args: dict[str, Any]) -> SkillActionObservation:
         data_schema_id="mivo_mcp.file",
         source_name="mivo_mcp:download_file",
     )
+
+
+def _validated_download_redirect(location: str) -> str:
+    if not location:
+        raise SkillActionError("Mivo download_file 返回重定向但缺少 Location")
+    download_url = urljoin(MIVO_ENDPOINT.rstrip("/") + "/", location.strip())
+    if not download_url.startswith("https://"):
+        raise SkillActionError("Mivo download_file 重定向只允许 https")
+    prefixes = [
+        prefix.strip().rstrip("/") + "/"
+        for prefix in MIVO_DOWNLOAD_REDIRECT_PREFIXES.split(",")
+        if prefix.strip()
+    ]
+    if not any(download_url.startswith(prefix) for prefix in prefixes):
+        raise SkillActionError("Mivo download_file 重定向目标不在允许列表")
+    return download_url
 
 
 async def _create_message(
