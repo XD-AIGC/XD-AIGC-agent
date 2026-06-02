@@ -593,6 +593,66 @@ async def _maybe_send_skill_image_by_file_id(
         _remember_image_file_id_param(skill, session, file_id)
 
 
+async def _maybe_send_mivo_image_by_file_id(message_id: str, obs: SkillActionObservation) -> bool:
+    """Deterministically download and send Mivo image outputs returned as fileIds."""
+    if obs.status != "success" or obs.content_bytes is not None or obs.artifact.get("sent_to_user"):
+        return False
+    file_id = _extract_mivo_image_file_id(obs.data)
+    if not file_id:
+        return False
+    try:
+        log.info("[MIVO_MCP] auto-downloading image fileId=%s", file_id[:32])
+        image_obs = await execute_mivo_mcp_action("download_file", {"arguments": {"fileId": file_id}})
+    except SkillActionError as e:
+        log.warning("[MIVO_MCP] cannot download image fileId=%s: %s", file_id[:32], e)
+        return False
+    except Exception:
+        log.exception("failed to auto-download Mivo image")
+        return False
+    sent = await _send_skill_action_artifact(message_id, image_obs)
+    if sent or image_obs.artifact.get("sent_to_user"):
+        obs.artifact["sent_to_user"] = True
+        obs.artifact["image_fileId"] = file_id
+        obs.artifact["auto_download_file"] = True
+        obs.next_actions = [item for item in obs.next_actions if item != "download_file"]
+        obs.summary = f"{obs.summary}，图片已自动发送给用户"
+        return True
+    return False
+
+
+def _extract_mivo_image_file_id(data) -> str | None:
+    if isinstance(data, dict):
+        for key in ("fileId", "file_id"):
+            file_id = _mivo_file_id_from_string(data.get(key))
+            if file_id:
+                return file_id
+        for key in ("fileIds", "images", "modelFiles"):
+            file_id = _extract_mivo_image_file_id(data.get(key))
+            if file_id:
+                return file_id
+        for key in ("content", "payload", "data", "result", "raw"):
+            file_id = _extract_mivo_image_file_id(data.get(key))
+            if file_id:
+                return file_id
+    if isinstance(data, list):
+        for item in data:
+            file_id = _extract_mivo_image_file_id(item)
+            if file_id:
+                return file_id
+    return _mivo_file_id_from_string(data)
+
+
+def _mivo_file_id_from_string(value) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if value.startswith("mivo://image/"):
+        return value.removeprefix("mivo://image/")
+    if value.startswith("http://") or value.startswith("https://"):
+        return value.rstrip("/").split("/")[-1] or None
+    return value
+
+
 async def _send_execute_result(message_id: str, result: ExecuteResult, skill: Skill) -> bool:
     prepared = await _prepare_execute_result_reply(result, skill)
     if prepared is None:
@@ -2014,9 +2074,12 @@ async def _agentic_loop(text: str, session, user_id: str, message_id: str) -> No
                 session.loaded_resources["mivo_mcp:list_tools"] = obs.for_prompt()
 
             await _send_skill_action_artifact(message_id, obs)
+            await _maybe_send_mivo_image_by_file_id(message_id, obs)
             current_text = (
                 f"[Mivo MCP action `{action.action_name}` 已执行，observation 如下。"
-                "请读取结果，保存关键 jobId/fileId 到 updated_params，并继续下一步。]\n"
+                "请读取结果，保存关键 jobId/fileId 到 updated_params，并继续下一步。"
+                "如果 artifacts.sent_to_user=true，说明图片已经发到飞书窗口；"
+                "不要再要求用户调用 download_file，也不要询问是否需要下载。]\n"
                 f"{obs.for_prompt()}"
             )
             await _store.save(user_id, session)

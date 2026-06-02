@@ -1113,6 +1113,103 @@ async def test_file_id_skill_action_fetches_and_sends_image(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mivo_poll_result_file_id_auto_downloads_and_sends_image(monkeypatch):
+    from src import main as main_mod
+    from src.skill.actions import SkillActionObservation
+
+    obs = SkillActionObservation(
+        status="success",
+        summary="poll_result 任务完成",
+        data={"status": "completed", "fileIds": ["file_1"], "images": ["mivo://image/file_1"]},
+        next_actions=["download_file"],
+    )
+    image_obs = SkillActionObservation(
+        status="success",
+        summary="download_file 返回图片",
+        content_bytes=b"PNG",
+        data_schema_id="image.binary",
+    )
+    execute_mivo = AsyncMock(return_value=image_obs)
+
+    async def mark_sent(_message_id, sent_obs):
+        if sent_obs.content_bytes is None:
+            return False
+        sent_obs.artifact["sent_to_user"] = True
+        return True
+
+    monkeypatch.setattr(main_mod, "execute_mivo_mcp_action", execute_mivo)
+    monkeypatch.setattr(main_mod, "_send_skill_action_artifact", AsyncMock(side_effect=mark_sent))
+
+    sent = await main_mod._maybe_send_mivo_image_by_file_id("msg-1", obs)
+
+    assert sent is True
+    execute_mivo.assert_awaited_once_with("download_file", {"arguments": {"fileId": "file_1"}})
+    assert obs.artifact["sent_to_user"] is True
+    assert obs.artifact["image_fileId"] == "file_1"
+    assert obs.artifact["auto_download_file"] is True
+    assert obs.next_actions == []
+
+
+@pytest.mark.asyncio
+async def test_mivo_agent_loop_auto_sends_file_id_before_final_reply(monkeypatch):
+    from src import main as main_mod
+    from src.orchestrator.schema import BotAction, UserSession
+    from src.skill.actions import SkillActionObservation
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = []
+
+        async def save(self, user_id, session):
+            self.saved.append((user_id, session.model_copy(deep=True)))
+
+    store = FakeStore()
+    reply_text = AsyncMock()
+    router_decide = AsyncMock(
+        side_effect=[
+            BotAction(action="call_mivo_mcp", action_name="poll_result", action_params={"arguments": {"jobId": "job_1"}}),
+            BotAction(action="reply", message="抠图完成，图片已发送。"),
+        ]
+    )
+    poll_obs = SkillActionObservation(
+        status="success",
+        summary="poll_result 任务完成",
+        data={"status": "completed", "jobId": "job_1", "fileIds": ["file_1"]},
+        next_actions=["download_file"],
+    )
+    image_obs = SkillActionObservation(
+        status="success",
+        summary="download_file 返回图片",
+        content_bytes=b"PNG",
+        data_schema_id="image.binary",
+    )
+    execute_mivo = AsyncMock(side_effect=[poll_obs, image_obs])
+
+    async def mark_sent(_message_id, sent_obs):
+        if sent_obs.content_bytes is None:
+            return False
+        sent_obs.artifact["sent_to_user"] = True
+        return True
+
+    monkeypatch.setattr(main_mod, "_store", store)
+    monkeypatch.setattr(main_mod, "reply_text", reply_text)
+    monkeypatch.setattr(main_mod, "router_decide", router_decide)
+    monkeypatch.setattr(main_mod, "execute_mivo_mcp_action", execute_mivo)
+    monkeypatch.setattr(main_mod, "_send_skill_action_artifact", AsyncMock(side_effect=mark_sent))
+
+    session = UserSession(mode="router")
+
+    await main_mod._agentic_loop("用这张图抠图", session, "user-1", "msg-1")
+
+    assert [call.args[0] for call in execute_mivo.await_args_list] == ["poll_result", "download_file"]
+    assert execute_mivo.await_args_list[1].args[1] == {"arguments": {"fileId": "file_1"}}
+    second_decision_text = router_decide.await_args_list[1].args[0]
+    assert "artifacts.sent_to_user=true" in second_decision_text
+    assert "不要询问是否需要下载" in second_decision_text
+    reply_text.assert_awaited_once_with(main_mod._client, "msg-1", "抠图完成，图片已发送。")
+
+
+@pytest.mark.asyncio
 async def test_preview_file_id_action_pauses_for_confirmation(monkeypatch):
     from src import main as main_mod
     from src.orchestrator.schema import BotAction, UserSession
