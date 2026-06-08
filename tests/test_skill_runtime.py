@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -78,37 +79,36 @@ def test_skill_runtime_wire_action_decodes_json_entries():
 
 @pytest.mark.asyncio
 async def test_skill_decide_uses_skill_runtime_action_schema(monkeypatch):
+    import json as _json
     from src.orchestrator import llm as llm_mod
     from src.orchestrator.schema import UserSession
     from src.skill.runtime import SkillRuntimeAction, SkillRuntimeWireAction
 
     captured = {}
+    _wire = SkillRuntimeWireAction(action="reply", message="ok")
 
     class _Message:
-        parsed = SkillRuntimeWireAction(action="reply", message="ok")
+        content = _json.dumps(_wire.model_dump(exclude_none=True))
 
     class _Choice:
         message = _Message()
 
     class _Completions:
-        async def parse(self, **kwargs):
-            captured["response_format"] = kwargs["response_format"]
+        async def create(self, **kwargs):
+            captured["response_format"] = kwargs.get("response_format")
             return type("Resp", (), {"choices": [_Choice()]})()
 
     class _Chat:
         completions = _Completions()
 
-    class _Beta:
-        chat = _Chat()
-
     class _Client:
-        beta = _Beta()
+        chat = _Chat()
 
     monkeypatch.setattr(llm_mod, "_client", _Client())
 
     action = await llm_mod.skill_decide("继续", UserSession(mode="skill"), _fake_skill())
 
-    assert captured["response_format"] is SkillRuntimeWireAction
+    assert captured["response_format"] == {"type": "json_object"}
     assert isinstance(action, SkillRuntimeAction)
 
 
@@ -119,26 +119,24 @@ async def test_skill_decide_dedupes_current_message_with_v2_history(monkeypatch)
     from src.skill.runtime import SkillRuntimeWireAction
 
     captured = {}
+    _wire = SkillRuntimeWireAction(action="reply", message="ok")
 
     class _Message:
-        parsed = SkillRuntimeWireAction(action="reply", message="ok")
+        content = json.dumps(_wire.model_dump(exclude_none=True))
 
     class _Choice:
         message = _Message()
 
     class _Completions:
-        async def parse(self, **kwargs):
+        async def create(self, **kwargs):
             captured["messages"] = kwargs["messages"]
             return type("Resp", (), {"choices": [_Choice()]})()
 
     class _Chat:
         completions = _Completions()
 
-    class _Beta:
-        chat = _Chat()
-
     class _Client:
-        beta = _Beta()
+        chat = _Chat()
 
     monkeypatch.setattr(llm_mod, "_client", _Client())
     session = ConversationSession(
